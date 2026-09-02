@@ -219,6 +219,10 @@ When Legal One changes its markup, `verify.ts` fails first. To re-derive:
 3. Diff your generated body against it field by field — that diff located every bug
    in this codebase.
 
+[`fixtures/README.md`](fixtures/README.md) has the capture steps, the file shape,
+and what a captured request carries — it is client data and a live credential, so
+it never leaves your machine.
+
 Known parser hazards, all previously silent:
 
 - Result grids **alternate row classes** (`webgrid-row-style` / `webgrid-alternating-row`)
@@ -247,3 +251,14 @@ Known parser hazards, all previously silent:
   a separate call from `update`, and deliberately never exercised here.
 - Everything is derived from one tenant's forms. Another Legal One instance may
   differ in field names, ids, and required fields.
+
+---
+
+## License
+
+[GNU Affero General Public License v3.0 or later](LICENSE). Copyright (C) 2026
+Oscar Neto; the notice is in [`COPYRIGHT`](COPYRIGHT).
+
+AGPL §13 is the clause to know: if you modify this and let others use it over a
+network, they are entitled to your modified source. Running it unmodified, or
+modifying it for your own firm's internal use, triggers nothing.

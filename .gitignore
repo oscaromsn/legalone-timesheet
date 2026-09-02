@@ -15,8 +15,12 @@ src/template.json
 # .context/   timesheet source documents — descriptions of real client work
 # fixtures/   captured HTTP traffic — real matters, contacts, ids, billing
 # scripts/    per-week run scripts, written against real clients by name
+#
+# fixtures/ is spelled with a glob rather than a trailing slash: git does not
+# descend into an excluded directory, so the negation below would not be seen.
 .context/
-fixtures/
+fixtures/*
+!fixtures/README.md
 scripts/
 
 .DS_Store

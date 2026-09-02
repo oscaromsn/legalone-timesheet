@@ -2,6 +2,7 @@
   "name": "legalone-timesheet",
   "type": "module",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

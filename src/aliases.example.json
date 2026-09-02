@@ -1,0 +1,28 @@
+{
+  "_comment": "Copy to src/aliases.json and fill in for your firm. The real file is gitignored — it names clients.",
+  "aliases": {
+    "Acme": "ACME PARTICIPAÇÕES LTDA",
+    "J. Ribeiro": "João Ribeiro de Souza",
+    "Fintech Co": "Carlos Andrade Lima"
+  },
+  "_aliases_comment": "Maps the name a timesheet line uses to the name Legal One files it under. Drift runs both ways: a person may be registered under their company, and a company under the individual who is the client of record — the third example above points person-ward, the reverse of the first. Billing-relevant: a wrong entry books hours against the wrong entity and nothing surfaces the error, so this is reviewed like code rather than inferred at runtime.",
+  "internal": {
+    "_comment": "Descriptions starting with any of these are firm-internal work, booked to the firm contact rather than a client matter.",
+    "prefixes": [
+      "Escritório"
+    ]
+  },
+  "defaults": {
+    "_comment": "Firm constants — never asked in the interview, because they are the same on every matter this practice files. Every value below is tenant-specific and MUST be replaced: find your own ids with client.lookup(...), see the Lookups section of the README. A <placeholder> left in place makes Legal One reject the form with a 405.",
+    "escritorioId": "<escritorio-id>",
+    "escritorioText": "<FIRM NAME AS REGISTERED> / Área operacional / <Área>",
+    "responsavelId": "<responsavel-id>",
+    "responsavelText": "<Responsible Lawyer Name>",
+    "responsavelPosicaoId": "<posicao-id>",
+    "responsavelPosicaoText": "Responsável",
+    "naturezaId": "<natureza-id>",
+    "naturezaText": "<Natureza>",
+    "contatoEscritorioId": "<firm-contact-id>",
+    "contatoEscritorioText": "<FIRM NAME AS REGISTERED>"
+  }
+}

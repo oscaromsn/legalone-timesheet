@@ -1,0 +1,22 @@
+node_modules/
+
+# Credentials. The cookie in .env is the entire credential for the account.
+.env
+
+# Tenant-bound configuration, copied from the .example files at setup and then
+# filled with real names, ids and rates. Never committed:
+#   aliases.json   client names — attorney-client information
+#   template.json  a captured snapshot of *your* form: your user id, your rate
+src/aliases.json
+src/template.json
+
+# Everything below accumulates client data by simply being used.
+#
+# .context/   timesheet source documents — descriptions of real client work
+# fixtures/   captured HTTP traffic — real matters, contacts, ids, billing
+# scripts/    per-week run scripts, written against real clients by name
+.context/
+fixtures/
+scripts/
+
+.DS_Store

@@ -1213,7 +1213,8 @@ export class LegalOneTimesheet {
 
   /**
    * Free-text search over matters. Matches CNJ numbers, folder labels, titles
-   * and party names.
+   * and party names. `maxPages` bounds the walk — a diagnostic that only needs a
+   * sample should not pull a firm's entire register.
    *
    * Searching by the name you *call* a case is unreliable: on an ação penal the
    * Cliente field holds the individual defendant, so searching a company name does
@@ -1223,9 +1224,9 @@ export class LegalOneTimesheet {
    *
    * Returns the first page of results only.
    */
-  async searchProcessos(term: string): Promise<Processo[]> {
+  async searchProcessos(term: string, maxPages = 50): Promise<Processo[]> {
     const all: Processo[] = [];
-    for (let page = 1; page <= 50; page++) {
+    for (let page = 1; page <= maxPages; page++) {
       const query = new URLSearchParams({
         IsSearchExecutedByUser: 'true',
         ShowAdvancedFilters: 'False',
@@ -1256,7 +1257,7 @@ export class LegalOneTimesheet {
    * filed under a company rather than a person (or the reverse), so a miss here is
    * weaker evidence than a miss on a CNJ.
    */
-  async searchContatos(term: string): Promise<Contato[]> {
+  async searchContatos(term: string, maxPages = 50): Promise<Contato[]> {
     /*
      * Paginated, like the matter search — grids stop at 18 rows. Without this the
      * nineteenth contact onward was invisible, and `missingMatter` decided between
@@ -1268,7 +1269,7 @@ export class LegalOneTimesheet {
      * and turn a single contact into fifty, which reads as fatal ambiguity.
      */
     const byId = new Map<number, Contato>();
-    for (let page = 1; page <= 50; page++) {
+    for (let page = 1; page <= maxPages; page++) {
       const query = new URLSearchParams({
         IsSearchExecutedByUser: 'true',
         ShowAdvancedFilters: 'False',

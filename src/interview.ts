@@ -13,6 +13,34 @@ import config from './aliases.json' with { type: 'json' };
 
 const defaults = config.defaults;
 
+/**
+ * The lookup endpoints the interview depends on, and the filters it sends them.
+ *
+ * Data rather than string literals so a diagnostic can hold them up against what a
+ * tenant's own form declares. Every filter here is a magic integer from one install:
+ * `tipoProcesso: '0'` pairs with a judicial matter, `idTipo: '0'` selects ação from
+ * ação/recurso/incidente, `tipo: '0'` filters órgão type. All three return an empty
+ * list rather than an error when the id space differs, which is exactly the kind of
+ * nothing that reads as "no matches".
+ */
+export const MATTER_LOOKUPS = {
+  posicao: {
+    path: '/processos/Processos/LookupPosicaoEnvolvido',
+    extra: { situacaoEnvolvido: '0', tipoProcesso: '0', pageSize: '100' } as Record<string, string>,
+    fills: 'Cliente.PosicaoEnvolvidoId',
+  },
+  acao: {
+    path: '/config/AcoesRecursosIncidentesProcesso/LookupTipoAcaoRecInc',
+    extra: { idTipo: '0' } as Record<string, string>,
+    fills: 'TipoAcaoId',
+  },
+  orgao: {
+    path: '/config/orgaos/LookupOrgao',
+    extra: { tipo: '0' } as Record<string, string>,
+    fills: 'OrgaoId',
+  },
+} as const;
+
 /** Justiça, from the CNJ's `J` digit. Fixed by the CNJ standard, not by this firm. */
 const JUSTICA_BY_DIGIT: Record<string, string> = {
   '1': 'Supremo Tribunal Federal',
@@ -134,14 +162,11 @@ export async function proposeMatter(
   choices.push({
     field: 'Cliente.PosicaoEnvolvido',
     label: 'Posição do cliente principal',
-    options: (await client.lookup('/processos/Processos/LookupPosicaoEnvolvido', undefined, {
-      situacaoEnvolvido: '0', tipoProcesso: '0', pageSize: '100',
-    })).map((r) => ({ id: String(r['Id']), value: String(r['Value']) })),
+    options: (await client.lookup(MATTER_LOOKUPS.posicao.path, undefined, MATTER_LOOKUPS.posicao.extra))
+      .map((r) => ({ id: String(r['Id']), value: String(r['Value']) })),
   });
 
-  const acaoOptions = await client.lookup(
-    '/config/AcoesRecursosIncidentesProcesso/LookupTipoAcaoRecInc', hints.acao, { idTipo: '0' },
-  );
+  const acaoOptions = await client.lookup(MATTER_LOOKUPS.acao.path, hints.acao, MATTER_LOOKUPS.acao.extra);
   choices.push({
     field: 'TipoAcao',
     label: 'Ação/Tipo',
@@ -151,7 +176,7 @@ export async function proposeMatter(
     note: acaoOptions.length > 1 ? `${acaoOptions.length} candidates — pick deliberately` : undefined,
   });
 
-  const orgaoOptions = await client.lookup('/config/orgaos/LookupOrgao', hints.orgao, { tipo: '0' });
+  const orgaoOptions = await client.lookup(MATTER_LOOKUPS.orgao.path, hints.orgao, MATTER_LOOKUPS.orgao.extra);
   choices.push({
     field: 'Orgao',
     label: 'Órgão',

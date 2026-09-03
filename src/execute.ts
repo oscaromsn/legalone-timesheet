@@ -35,7 +35,12 @@ import type { PlannedEntry } from './resolver.ts';
 export const entryKey = (date: string, startTime: string, endTime: string): string =>
   `${date} ${startTime}-${endTime}`;
 
-const keyOfRecord = (r: TimeEntryRecord): string | null => {
+/**
+ * The key a record would be deduplicated under, or null when its timestamps are in
+ * a shape this client does not recognise. Exported so a diagnostic can measure the
+ * real rule rather than a copy of it.
+ */
+export const keyOfRecord = (r: TimeEntryRecord): string | null => {
   const start = (r.inicio ?? '').match(/^(\d{2}\/\d{2}\/\d{4}) (\d{2}:\d{2}:\d{2})$/);
   const end = (r.termino ?? '').match(/(\d{2}:\d{2}:\d{2})$/);
   return start && end ? entryKey(start[1]!, start[2]!, end[1]!) : null;

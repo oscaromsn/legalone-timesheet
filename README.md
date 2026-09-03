@@ -257,9 +257,11 @@ await client.lookup('/config/orgaos/LookupOrgao', 'Federal do Rio', { tipo: '0' 
 ```
 
 `parseLookups(html)` reads the `contentUrl` values off a rendered form, which is
-how a tenant's own ids are found without any of them being written down first —
-42 lookups on the matter form, four of them hierarchical. Pair it with
-`readFormPairs(path)`, which returns the form's ordered pairs and its html.
+how a tenant's own ids are found without any of them being written down first.
+The count varies with the record — three matters on one tenant declared 42, 48 and
+36 lookups, since each envolvido row brings its own — so read the form rather than
+trusting a number. Four hierarchical ones were constant across all three. Pair it
+with `readFormPairs(path)`, which returns the form's ordered pairs and its html.
 
 ---
 

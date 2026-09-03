@@ -56,7 +56,7 @@ const ajax403 = () => new Response('You do not have permission to view this dire
 
 let pass = 0, fail = 0;
 async function expectExpired(what: string, shape: keyof typeof shapes, run: (c: LegalOneTimesheet) => Promise<unknown>) {
-  globalThis.fetch = (async () => shapes[shape]()) as typeof fetch;
+  globalThis.fetch = (async () => shapes[shape]()) as unknown as typeof fetch;
   const client = new LegalOneTimesheet({ cookie: 'stale', baseUrl: TENANT });
   try {
     const result = await run(client);
@@ -85,7 +85,7 @@ for (const shape of ['followed', 'bodyOnly', 'federated'] as const) {
   }]));
 }
 // lookup is the only AJAX caller, and the only one that sees the 403 instead.
-globalThis.fetch = (async () => ajax403()) as typeof fetch;
+globalThis.fetch = (async () => ajax403()) as unknown as typeof fetch;
 try {
   await new LegalOneTimesheet({ cookie: 'stale', baseUrl: TENANT })
     .lookup('/contatos/Contatos/LookupGridContato', 'Acme');

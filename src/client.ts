@@ -104,6 +104,15 @@ export const TimeEntrySchema = z
 
 export type TimeEntry = z.infer<typeof TimeEntrySchema>;
 
+/**
+ * What a caller supplies. Distinct from `TimeEntry`, which is the parsed *output*:
+ * `text` on a link carries a `.default('')`, so it is optional going in and present
+ * coming out. Demanding the output type here made the firm contact — itself a
+ * `Link`, i.e. an input — fail to typecheck against the very method it exists for.
+ * Every entry point below re-parses, so the input type is the honest signature.
+ */
+export type TimeEntryInput = z.input<typeof TimeEntrySchema>;
+
 const toSeconds = (t: string): number => {
   const [h = 0, m = 0, s = 0] = t.split(':').map(Number);
   return h * 3600 + m * 60 + s;
@@ -162,7 +171,7 @@ const setField = (fields: Array<[string, string]>, name: string, value: string):
   else fields.push([name, value]);
 };
 
-const buildBody = (entry: TimeEntry, id?: number): string => {
+const buildBody = (entry: TimeEntryInput, id?: number): string => {
   const e = TimeEntrySchema.parse(entry);
   const duration = toDuration(toSeconds(e.endTime) - toSeconds(e.startTime));
 
@@ -590,7 +599,7 @@ export class LegalOneTimesheet {
   }
 
   /** Creates a timesheet entry. Returns the new record id. */
-  async create(entry: TimeEntry): Promise<number> {
+  async create(entry: TimeEntryInput): Promise<number> {
     const html = await this.post(`${this.base}${PATH}/EditHoraTrabalhada`, buildBody(entry));
     const id = html.match(/HorasTrabalhadas\/Details\/(\d+)/)?.[1];
     if (!id) throw new Error('entry saved but no id found in the response');
@@ -605,7 +614,7 @@ export class LegalOneTimesheet {
    * `IsCobravel=false` — so replaying it would quietly revert an approved entry to
    * Pendente and reassign someone else's work to the template's executante.
    */
-  async update(id: number, changes: Partial<TimeEntry>): Promise<void> {
+  async update(id: number, changes: Partial<TimeEntryInput>): Promise<void> {
     const path = `${PATH}/EditHoraTrabalhada/${id}`;
     const { pairs, html } = await this.readFormPairs(path);
     this.assertNoDroppedLookups(html, pairs, `entry ${id}`);

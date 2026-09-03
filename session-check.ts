@@ -14,6 +14,7 @@
  */
 import { LegalOneTimesheet, SessionExpiredError, type Link } from './src/client.ts';
 import { withRenewal } from './src/auth.ts';
+import { portTimeout } from './src/session.ts';
 import { planEntries } from './src/resolver.ts';
 
 const TENANT = 'https://tenant.novajus.com.br';
@@ -177,6 +178,24 @@ const check = (name: string, condition: boolean, detail = '') => {
     await withRenewal(async () => { throw new Error('rejected by Legal One'); }, 'retry', async () => { renewals++; });
   } catch (e) { message = (e as Error).message; }
   check('renewal: leaves other failures alone', renewals === 0 && message === 'rejected by Legal One');
+}
+
+{
+  /*
+   * A browser that never opened a port has two causes and one symptom, and the
+   * message has to separate them: a sandbox denying the profile write was, in
+   * testing, reported as "did not open a debugging port" and read as a bug in this
+   * client for an hour. Whichever branch is taken, the message must name a profile
+   * directory — that is the thing the reader acts on.
+   */
+  const confined = portTimeout('/somewhere/browser', 30_000, false);
+  const collision = portTimeout('/somewhere/browser', 30_000, true);
+  check('port timeout: an empty profile is reported as confinement, not slowness',
+    /sandbox|policy/i.test(confined) && !/another instance/i.test(confined), confined);
+  check('port timeout: a written profile is reported as a collision',
+    /another instance/i.test(collision) && !/sandbox/i.test(collision), collision);
+  check('port timeout: both name the directory to act on',
+    confined.includes('/somewhere/browser') && collision.includes('/somewhere/browser'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

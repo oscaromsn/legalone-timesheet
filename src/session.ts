@@ -27,9 +27,9 @@
  * redirects, with no interaction — headless included.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { Cdp } from './cdp.ts';
 
 /** The application session cookie. Everything else the browser holds is incidental. */
@@ -63,10 +63,28 @@ export interface SessionOptions {
   /** Open a visible window straight away instead of trying headless first. */
   interactive?: boolean;
   timeoutMs?: number;
+  /**
+   * Called as the acquisition moves between stages, so a command can say what it is
+   * waiting on. A cold profile spends over a minute here — launching a browser that
+   * has never run, then a redirect chain across two identity providers — and none of
+   * it prints anything, which is indistinguishable from a hang. A library must not
+   * choose a stream to write to (this one is imported by an MCP server, where stdout
+   * is the protocol), so it reports and the caller decides.
+   */
+  onProgress?: (message: string) => void;
 }
 
-/** Per-OS application directory. Deliberately outside the repository. */
+/**
+ * Per-OS application directory. Deliberately outside the repository.
+ *
+ * `LEGALONE_PROFILE_DIR` overrides it, which is what makes a cold start testable:
+ * without it the only way to reach a fresh profile is to move `HOME`, and that also
+ * moves the macOS keychain — so Chrome cannot reach its own safe storage, raises a
+ * modal, and every measurement taken that way is of the modal rather than of this.
+ */
 export const defaultProfileDir = (): string => {
+  const override = process.env['LEGALONE_PROFILE_DIR'];
+  if (override) return override;
   const home = homedir();
   if (platform() === 'darwin') return join(home, 'Library', 'Application Support', 'legalone-timesheet', 'browser');
   if (platform() === 'win32') return join(process.env['LOCALAPPDATA'] ?? join(home, 'AppData', 'Local'), 'legalone-timesheet', 'browser');
@@ -117,7 +135,18 @@ interface Browser { cdp: Cdp; stop: () => void }
  * port on the default profile — that hole was closed deliberately — and it is also
  * what keeps this away from the user's own browsing.
  */
-async function launch(browserPath: string, profileDir: string, headless: boolean, timeoutMs: number): Promise<Browser> {
+async function launch(
+  browserPath: string,
+  profileDir: string,
+  headless: boolean,
+  timeoutMs: number,
+  onProgress: (message: string) => void = () => {},
+): Promise<Browser> {
+  const firstRun = !existsSync(join(profileDir, 'Local State'));
+  onProgress(
+    `starting ${basename(browserPath)}${headless ? '' : ' in a visible window'}` +
+      `${firstRun ? ' — first run on a new profile, which takes longer' : ''}`,
+  );
   mkdirSync(profileDir, { recursive: true });
   const portFile = join(profileDir, 'DevToolsActivePort');
   rmSync(portFile, { force: true });
@@ -149,9 +178,28 @@ async function launch(browserPath: string, profileDir: string, headless: boolean
     }
     await new Promise((r) => setTimeout(r, 150));
   }
+  const wrote = (() => { try { return readdirSync(profileDir).length > 0; } catch { return false; } })();
   stop();
-  throw new Error(`browser did not open a debugging port within ${timeoutMs}ms`);
+  throw new Error(portTimeout(profileDir, timeoutMs, wrote));
 }
+
+/**
+ * Says why no debugging port appeared, which the timeout alone never does.
+ *
+ * The two causes need opposite responses and are told apart by one observation: a
+ * browser that wrote nothing at all into a directory it was handed is not slow, it
+ * is confined — every sandbox that denies the write produces exactly this, an alive
+ * process and an empty profile. A browser that wrote a profile and then produced no
+ * port is the ordinary collision instead. Naming the wrong one costs an hour.
+ */
+export const portTimeout = (profileDir: string, timeoutMs: number, wrote: boolean): string =>
+  wrote
+    ? `browser did not open a debugging port within ${timeoutMs}ms, though it did write to ${profileDir}. ` +
+      `Another instance is probably holding that profile — close it, or pass a different profileDir.`
+    : `browser started but wrote nothing into ${profileDir} within ${timeoutMs}ms, so it never opened a ` +
+      `debugging port. A browser that cannot write the profile directory it was given is normally one confined ` +
+      `by a sandbox or by a policy on that path; check that this process may write there, or pass a profileDir ` +
+      `it may write to.`;
 
 const sessionCookie = async (cdp: Cdp): Promise<string | null> => {
   const { cookies } = await cdp.send<{ cookies: Array<{ name: string; value: string }> }>('Storage.getCookies');
@@ -165,13 +213,26 @@ const sessionCookie = async (cdp: Cdp): Promise<string | null> => {
  * anywhere else with a session cookie in hand means it renewed silently. Both are
  * ordinary outcomes, so this returns them rather than throwing.
  */
-async function navigate(cdp: Cdp, url: string, timeoutMs: number): Promise<{ cookie: string | null; hosts: string[]; finalUrl: string }> {
+async function navigate(
+  cdp: Cdp,
+  url: string,
+  timeoutMs: number,
+  onProgress: (message: string) => void = () => {},
+): Promise<{ cookie: string | null; hosts: string[]; finalUrl: string }> {
   const { targetId, sessionId } = await cdp.openTab('about:blank');
   const hosts: string[] = [];
   const off = cdp.on((event) => {
     if (event.method !== 'Network.requestWillBeSent' || event.params['type'] !== 'Document') return;
     const request = event.params['request'] as { url?: string } | undefined;
-    if (request?.url) { try { hosts.push(new URL(request.url).host); } catch { /* not a URL we can read */ } }
+    if (request?.url) {
+      try {
+        const { host } = new URL(request.url);
+        // Only when it changes: the chain revisits hosts, and a repeated line reads
+        // as a loop rather than as progress.
+        if (host !== hosts[hosts.length - 1]) onProgress(`  → ${host}`);
+        hosts.push(host);
+      } catch { /* not a URL we can read */ }
+    }
   });
 
   try {
@@ -236,13 +297,32 @@ export async function ensureSession(options: SessionOptions = {}): Promise<Sessi
   const browserPath = findBrowser(options.browserPath);
   const timeoutMs = options.timeoutMs ?? 30_000;
   const target = options.tenant ? `${options.tenant.replace(/\/+$/, '')}/` : ONEPASS_ENTRY;
+  const say = options.onProgress ?? (() => {});
 
-  if (!options.interactive) {
-    const browser = await launch(browserPath, profileDir, true, timeoutMs);
+  /*
+   * A profile that has never existed cannot hold a sign-on, so trying headless first
+   * is twenty seconds spent proving something already known — a browser launched, a
+   * redirect chain followed to the identity provider, and a timeout waited out, all
+   * to discover that a directory that was not there a moment ago has no cookies in
+   * it. That is the first twenty seconds a new user ever spends with this.
+   *
+   * Deliberately narrow: only a *missing* directory licenses the skip. Once the
+   * profile exists it may well hold a live sign-on, and renewing without a window is
+   * the whole point of the headless attempt on every run after this one.
+   */
+  const neverRun = !existsSync(profileDir);
+  if (neverRun) say('no browser profile yet, so there is no sign-on to renew — going straight to a window');
+
+  if (!options.interactive && !neverRun) {
+    const browser = await launch(browserPath, profileDir, true, timeoutMs, say);
     try {
-      const { cookie, hosts } = await navigate(browser.cdp, target, timeoutMs);
+      say('checking whether the sign-on still holds');
+      const { cookie, hosts } = await navigate(browser.cdp, target, timeoutMs, say);
       const tenant = options.tenant ?? tenantFrom(hosts);
-      if (cookie && tenant) return { kind: 'ready', cookie, tenant: tenant.replace(/\/+$/, '') };
+      if (cookie && tenant) {
+        say(`session renewed without asking you anything — ${tenant}`);
+        return { kind: 'ready', cookie, tenant: tenant.replace(/\/+$/, '') };
+      }
     } finally {
       browser.cdp.close();
       browser.stop();
@@ -250,7 +330,9 @@ export async function ensureSession(options: SessionOptions = {}): Promise<Sessi
   }
 
   // Headless could not get there on its own: hand the browser to the person.
-  const visible = await launch(browserPath, profileDir, false, timeoutMs);
+  if (!neverRun) say('the sign-on has lapsed, so this needs you');
+  const visible = await launch(browserPath, profileDir, false, timeoutMs, say);
+  say('window open — loading the sign-on page');
   const { targetId, sessionId } = await visible.cdp.openTab('about:blank');
   await visible.cdp.send('Page.navigate', { url: target }, sessionId).catch(() => undefined);
   void targetId;

@@ -29,7 +29,12 @@ let clientTenant: string | null = null;
  * should not create one.
  */
 export function sessionHandle(): BrowserSession {
-  sharedSession ??= browserSession();
+  sharedSession ??= browserSession({
+    // stderr, never stdout: stdout is the MCP transport, and a progress line on it
+    // is a protocol violation that presents as the server going silent. Claude
+    // Desktop keeps stderr in its logs, which is where someone debugging looks.
+    onProgress: (m) => process.stderr.write(`[legalone] ${m}\n`),
+  });
   return sharedSession;
 }
 

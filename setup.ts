@@ -226,7 +226,16 @@ async function selfTest(client: LegalOneTimesheet, link: Link): Promise<void> {
 }
 
 async function main(): Promise<number> {
-  const session = browserSession();
+  /*
+   * The elapsed prefix is the point. A cold profile takes over a minute to reach
+   * "sign in required" — a new browser, then a redirect chain across two identity
+   * providers — and printed nothing at all, which reads as a hang rather than as
+   * work. A person who cannot tell those apart kills the process.
+   */
+  const started = Date.now();
+  const session = browserSession({
+    onProgress: (m) => say(`[${String(Math.round((Date.now() - started) / 1000)).padStart(3)}s] ${m}`),
+  });
   let cookie: string;
   try {
     cookie = await session.cookie();

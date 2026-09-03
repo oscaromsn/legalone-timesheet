@@ -163,6 +163,8 @@ export async function discover(
    */
   const sampledMatters: number[] = [];
   let unreadable = 0;
+  /** Matters whose origem and responsável escritórios actually differ. */
+  const divergentEscritorio: number[] = [];
   for (const id of [...matterIds].slice(0, maxMatters)) {
     let m: Record<string, string> | null = null;
     for (const kind of ['processo', 'incidente'] as const) {
@@ -172,6 +174,10 @@ export async function discover(
     sampledMatters.push(id);
     escritorioOrigem.add(m['EscritorioOrigemId'], m['EscritorioOrigemText']);
     escritorioResponsavel.add(m['EscritorioResponsavelId'], m['EscritorioResponsavelText']);
+    // Compared here, on the record, rather than between the two tallies later.
+    const origem = m['EscritorioOrigemId'];
+    const respEscritorio = m['EscritorioResponsavelId'];
+    if (origem && respEscritorio && origem !== respEscritorio) divergentEscritorio.push(id);
     responsavel.add(m['Responsavel.EnvolvidoId'], m['Responsavel.EnvolvidoText']);
     posicao.add(m['Responsavel.PosicaoEnvolvidoId'], m['Responsavel.PosicaoEnvolvidoText']);
     natureza.add(m['NaturezaId'], m['NaturezaText']);
@@ -194,16 +200,18 @@ export async function discover(
   ];
 
   /*
-   * These were one field until this tenant showed they are two. Origem sat at a
-   * practice-area node while responsável sat at the firm root, and a single
-   * `escritorioId` had been writing the area node into both.
+   * Whether the two escritórios diverge is a question about records, not about
+   * modes — and this compared modes until a tenant proved the difference. There,
+   * one sampled matter had no origem, so the two tallies were drawn from sets of
+   * different sizes and their most-common values disagreed, while all fourteen
+   * matters had the two fields identical. Identical distributions do not imply
+   * identical pairs, and neither does the reverse. Compare the pair, on the record.
    */
-  const origem = escritorioOrigem.candidates()[0]?.value;
-  const respEscritorio = escritorioResponsavel.candidates()[0]?.value;
-  if (origem && respEscritorio && origem !== respEscritorio) {
+  if (divergentEscritorio.length > 0) {
     warnings.push(
-      `Escritório de origem (${origem}) and escritório responsável (${respEscritorio}) are different here. ` +
-        'That is normal and now configurable separately — check both before adopting.',
+      `${divergentEscritorio.length} of ${sampledMatters.length} matters file origem and responsável under ` +
+        `different escritórios (e.g. matter ${divergentEscritorio[0]}). Configure the two separately and ` +
+        'check both, rather than assuming one value serves.',
     );
   }
 

@@ -39,6 +39,28 @@ export const ENTRY_STATUS = {
 
 export type EntryStatus = keyof typeof ENTRY_STATUS;
 
+/**
+ * The label Legal One renders for each status.
+ *
+ * The ids above came from one tenant and are documentation, not truth: a different
+ * install can number its states differently, and `setEntryStatus` used to verify its
+ * write against the very constant it had just written — proving the value came back,
+ * never that the value meant the state its name claims. States 5 and 6 move entries
+ * toward invoicing, so being wrong there is expensive and was completely silent.
+ *
+ * Resolving through the label trades a silent failure for a loud one. A tenant in
+ * another language stops with the list of what it does offer, instead of quietly
+ * filing an entry as billed.
+ */
+const ENTRY_STATUS_LABEL: Record<EntryStatus, string> = {
+  aprovada: 'Aprovada',
+  disponivelParaAprovacao: 'Disponível para aprovação',
+  pendente: 'Pendente',
+  recusada: 'Recusada',
+  disponivelParaFinanceiro: 'Disponível para o financeiro',
+  lancadaNoFinanceiro: 'Lançada no financeiro',
+};
+
 const hhmmss = /^\d{2}:\d{2}:\d{2}$/;
 const ddmmyyyy = /^\d{2}\/\d{2}\/\d{4}$/;
 
@@ -677,6 +699,27 @@ export class LegalOneTimesheet {
    * client — and any site added later would have quietly kept reading the old
    * value. `extra` carries whatever else that particular request needs.
    */
+  /** This tenant's status ids, read once — the list does not change mid-run. */
+  private statusIds: Map<string, string> | null = null;
+
+  /** Resolves a status name to the id *this* tenant uses for it. */
+  private async statusId(status: EntryStatus): Promise<string> {
+    if (!this.statusIds) {
+      const rows = await this.lookup(`${PATH}/LookupSituacao`, undefined, { pageSize: '100' });
+      this.statusIds = new Map(
+        rows.map((r) => [String(r['Value'] ?? '').trim().toLowerCase(), String(r['Id'] ?? '')]),
+      );
+    }
+    const id = this.statusIds.get(ENTRY_STATUS_LABEL[status].toLowerCase());
+    if (!id) {
+      throw new Error(
+        `this tenant has no timesheet status called "${ENTRY_STATUS_LABEL[status]}". ` +
+          `It offers: ${[...this.statusIds.keys()].join(', ') || '(nothing)'}.`,
+      );
+    }
+    return id;
+  }
+
   private async authHeaders(extra: Record<string, string> = {}): Promise<Record<string, string>> {
     const { cookie } = this.options;
     return { Cookie: typeof cookie === 'string' ? cookie : await cookie(), ...extra };
@@ -1059,19 +1102,22 @@ export class LegalOneTimesheet {
    */
   async setEntryStatus(id: number, status: EntryStatus): Promise<void> {
     const path = `${PATH}/EditHoraTrabalhada/${id}`;
+    const wanted = await this.statusId(status);
     const { pairs, html } = await this.readFormPairs(path);
     this.assertNoDroppedLookups(html, pairs, `entry ${id}`);
     const body = pairs.map<[string, string]>(([name, value]) =>
-      name === 'SituacaoId' ? [name, String(ENTRY_STATUS[status])] : [name, value],
+      name === 'SituacaoId' ? [name, wanted] : [name, value],
     );
     body.unshift(['Id', String(id)]);
     body.push(['ButtonSave', '1']);
     await this.submitForm(path, body);
 
+    // Still a read-back: the lookup settles what the id *means*, this settles that
+    // the server kept it.
     const after = await this.readFormPairs(path);
     const saved = after.pairs.find(([name]) => name === 'SituacaoId')?.[1];
-    if (saved !== String(ENTRY_STATUS[status])) {
-      throw new Error(`status change on ${id} did not stick: wanted ${ENTRY_STATUS[status]}, got ${saved}`);
+    if (saved !== wanted) {
+      throw new Error(`status change on ${id} did not stick: wanted ${wanted} (${status}), got ${saved}`);
     }
   }
 

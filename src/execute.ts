@@ -41,6 +41,36 @@ const keyOfRecord = (r: TimeEntryRecord): string | null => {
   return start && end ? entryKey(start[1]!, start[2]!, end[1]!) : null;
 };
 
+/**
+ * Builds the set of spans already booked — and refuses to build a partial one.
+ *
+ * `keyOfRecord` returns null for any timestamp it does not recognise, and dropping
+ * those would be the worst possible response: a tenant rendering a 12-hour clock, or
+ * dates in another order, yields an *empty* set, every span then looks unbooked, and
+ * the whole range is written a second time. The duplicate check would fail open on
+ * precisely the tenant it was most needed on.
+ *
+ * So an unreadable timestamp stops the batch. Not being able to tell what is already
+ * there is a reason to write nothing, not a reason to write everything.
+ */
+const bookedSpans = (records: TimeEntryRecord[]): Set<string> => {
+  const booked = new Set<string>();
+  const unreadable: string[] = [];
+  for (const record of records) {
+    const key = keyOfRecord(record);
+    if (key) booked.add(key);
+    else unreadable.push(`${record.inicio ?? '(none)'} → ${record.termino ?? '(none)'}`);
+  }
+  if (unreadable.length > 0) {
+    throw new Error(
+      `refusing to write: ${unreadable.length} of ${records.length} existing entries carry timestamps this ` +
+        `client cannot read, so the duplicate check would pass on everything and book the range twice. ` +
+        `Expected "dd/MM/yyyy HH:mm:ss"; got ${unreadable[0]}. Run the doctor against this tenant.`,
+    );
+  }
+  return booked;
+};
+
 /** What a person decided for an entry the resolver would not decide alone. */
 export type Decision =
   | { kind: 'link'; link: Link }
@@ -92,11 +122,7 @@ export async function executePlan(
   if (planned.length === 0) return { outcomes, written: 0, alreadyLogged: 0, held: 0, heldMinutes: 0 };
 
   const dates = planned.map((p) => p.date).sort((a, b) => sortable(a).localeCompare(sortable(b)));
-  const logged = new Set(
-    (await client.listEntries(dates[0]!, dates[dates.length - 1]!))
-      .map(keyOfRecord)
-      .filter((k): k is string => k !== null),
-  );
+  const logged = bookedSpans(await client.listEntries(dates[0]!, dates[dates.length - 1]!));
 
   /** Folder labels, read once each: a link needs one and a plan repeats matters. */
   const labels = new Map<number, string>();

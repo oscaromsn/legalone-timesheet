@@ -124,5 +124,25 @@ const stub = (existing: Array<Record<string, unknown>> = []) => {
     attempts === 1 && report.written === 1 && report.outcomes[0]!.id === 55, `attempts=${attempts}`);
 }
 
+{
+  /*
+   * The one that would have been catastrophic and invisible. A tenant rendering a
+   * 12-hour clock makes every timestamp unreadable; dropping those silently leaves
+   * an empty "already booked" set, and the whole range gets written a second time.
+   * Refusing to proceed is the only safe answer — the client cannot tell what is
+   * already there.
+   */
+  const { client, created } = stub([
+    { id: 9, inicio: '01/09/2026 09:00:00 AM', termino: '01/09/2026 10:00:00 AM', descricao: 'A' },
+  ]);
+  let message = '';
+  try {
+    await executePlan(client, [internal('01/09/2026', '09:00:00', '10:00:00', 'A')]);
+  } catch (e) { message = (e as Error).message; }
+  check('refuses to write when existing timestamps cannot be read',
+    created.length === 0 && message.includes('refusing to write') && message.includes('AM'),
+    message.slice(0, 90) || 'did not throw');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

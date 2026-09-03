@@ -435,6 +435,96 @@ const decodeEntities = (s: string): string =>
  * would post another record's identifiers. Round-tripping the live form is the
  * only approach that generalises.
  */
+interface RawLookupConfig {
+  contentUrl?: string;
+  inputHiddenName?: string;
+  inputTextName?: string;
+  value?: Array<{ HasValue?: boolean; Id?: number | string; Value?: string }>;
+}
+
+/** A lookup widget as declared on a rendered form. */
+export interface LookupWidget {
+  /** `.lookup` for flat pickers, `.lookupTree` for hierarchical ones such as Escritório. */
+  kind: 'lookup' | 'lookupTree';
+  /** The JSON endpoint the picker queries, ready to pass to `lookup()`. */
+  contentUrl: string | null;
+  /** The two form fields it fills — the id and its display text. */
+  inputHiddenName: string | null;
+  inputTextName: string | null;
+  /** Whatever the form arrived with selected, if anything. */
+  selected: { id: string | null; value: string } | null;
+}
+
+/**
+ * Yields every lookup widget config embedded in a page's scripts.
+ *
+ * Lookup widgets (client, contrário, responsável, órgão, comarca…) have no markup:
+ * jQuery builds their hidden inputs at runtime from a `.lookup({…})` config. Parsing
+ * only the served HTML would omit every one of them, and posting that back would
+ * strip the matter's client and responsável — silent destruction of master data.
+ *
+ * The scan is a brace matcher rather than a regex because the config is arbitrary
+ * JSON: it respects strings and escapes, so a brace inside a label cannot end it.
+ */
+function* lookupConfigs(html: string): Generator<{ kind: 'lookup' | 'lookupTree'; config: RawLookupConfig }> {
+  for (const marker of html.matchAll(/\.lookup(Tree)?\(\{/g)) {
+    const start = marker.index! + marker[0].length - 1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let i = start; i < html.length; i++) {
+      const ch = html[i]!;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) { end = i + 1; break; }
+    }
+    if (end === -1) continue;
+
+    let config: RawLookupConfig;
+    // A config we cannot read is reported by readMatter's coverage check.
+    try { config = JSON.parse(html.slice(start, end)) as RawLookupConfig; } catch { continue; }
+    yield { kind: marker[1] ? 'lookupTree' : 'lookup', config };
+  }
+}
+
+/**
+ * The row a widget arrived with selected.
+ *
+ * Flat `.lookup` widgets mark the chosen row with HasValue; `.lookupTree` entries
+ * carry only Id/Value. Requiring HasValue silently emptied every hierarchical field
+ * — Escritório responsável among them, which is required, so the save was rejected
+ * with no message at all. Free-text lookups (the timesheet's Descrição) carry their
+ * content in `Value` with HasValue:false and Id:null; rejecting those read the field
+ * as empty, so an update would have blanked the description.
+ */
+const selectedRow = (config: RawLookupConfig) =>
+  config.value?.find((v) => v?.HasValue) ??
+  config.value?.find((v) => v?.Id != null) ??
+  config.value?.find((v) => typeof v?.Value === 'string' && v.Value !== '');
+
+/**
+ * Every lookup on a rendered form, with the endpoint each one queries.
+ *
+ * This is how a tenant's own ids are discovered without any of them being written
+ * down in advance: the form declares which endpoint fills which field, so setup can
+ * walk it rather than being handed a table.
+ */
+export const parseLookups = (html: string): LookupWidget[] =>
+  [...lookupConfigs(html)].map(({ kind, config }) => {
+    const selected = selectedRow(config);
+    return {
+      kind,
+      contentUrl: config.contentUrl ?? null,
+      inputHiddenName: config.inputHiddenName ?? null,
+      inputTextName: config.inputTextName ?? null,
+      selected: selected ? { id: selected.Id != null ? String(selected.Id) : null, value: selected.Value ?? '' } : null,
+    };
+  });
+
 const parseFormFields = (html: string): Array<[string, string]> => {
   const fields: Array<[string, string]> = [];
 
@@ -473,43 +563,8 @@ const parseFormFields = (html: string): Array<[string, string]> => {
    * destruction of master data. The config carries both the field names and the
    * current selection, so read them from there.
    */
-  for (const marker of [...html.matchAll(/\.lookup(?:Tree)?\(\{/g)]) {
-    const start = marker.index! + marker[0].length - 1;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    let end = -1;
-    for (let i = start; i < html.length; i++) {
-      const ch = html[i]!;
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if (ch === '"') { inString = !inString; continue; }
-      if (inString) continue;
-      if (ch === '{') depth++;
-      else if (ch === '}' && --depth === 0) { end = i + 1; break; }
-    }
-    if (end === -1) continue;
-
-    let config: { inputHiddenName?: string; inputTextName?: string; value?: Array<{ HasValue?: boolean; Id?: number | string; Value?: string }> };
-    try {
-      config = JSON.parse(html.slice(start, end));
-    } catch {
-      continue; // a config we can't read is reported by readMatter's coverage check
-    }
-
-    /*
-     * Flat `.lookup` widgets mark the chosen row with HasValue; `.lookupTree`
-     * entries carry only Id/Value. Requiring HasValue silently emptied every
-     * hierarchical field — Escritório responsável among them, which is required,
-     * so the save was rejected with no message at all.
-     */
-    const selected =
-      config.value?.find((v) => v?.HasValue) ??
-      config.value?.find((v) => v?.Id != null) ??
-      // Free-text lookups (the timesheet's Descrição) carry their content in
-      // `Value` with HasValue:false and Id:null. Rejecting those read the field
-      // as empty, so an update would have blanked the description.
-      config.value?.find((v) => typeof v?.Value === 'string' && v.Value !== '');
+  for (const { config } of lookupConfigs(html)) {
+    const selected = selectedRow(config);
     if (config.inputHiddenName) fields.push([config.inputHiddenName, selected?.Id != null ? String(selected.Id) : '']);
     if (config.inputTextName) fields.push([config.inputTextName, selected?.Value ?? '']);
   }
@@ -734,8 +789,12 @@ export class LegalOneTimesheet {
    * that to a map keeps the empty one, the action's `int Id` fails to bind, no action
    * matches POST, and IIS answers 405. Anything that submits a form must use this;
    * `readMatter` is for inspection only.
+   *
+   * Public because configuration discovery needs both halves: the ordered pairs
+   * are what a create template is made of, and the html is what `parseLookups`
+   * reads to find a tenant's own endpoints.
    */
-  private async readFormPairs(path: string): Promise<{ pairs: Array<[string, string]>; html: string }> {
+  async readFormPairs(path: string): Promise<{ pairs: Array<[string, string]>; html: string }> {
     const response = await fetch(`${this.base}${path}`, { headers: await this.authHeaders() });
     const html = await response.text();
     assertSession(response, `form ${path}`, html);

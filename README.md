@@ -211,8 +211,10 @@ await client.lookup('/contatos/Contatos/LookupGridContato', 'ACME');
 await client.lookup('/config/orgaos/LookupOrgao', 'Federal do Rio', { tipo: '0' });
 ```
 
-Discover the full set by reading the `contentUrl` values on a rendered form —
-33 of them on the matter form. That is how the ids in `aliases.json` were found.
+`parseLookups(html)` reads the `contentUrl` values off a rendered form, which is
+how a tenant's own ids are found without any of them being written down first —
+42 lookups on the matter form, four of them hierarchical. Pair it with
+`readFormPairs(path)`, which returns the form's ordered pairs and its html.
 
 ---
 

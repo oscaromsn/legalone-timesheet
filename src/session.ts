@@ -262,9 +262,17 @@ export async function ensureSession(options: SessionOptions = {}): Promise<Sessi
 
 /** Raised when only a person can proceed. A window is open at `url`. */
 export class LoginRequiredError extends Error {
-  constructor(readonly url: string, readonly profileDir: string) {
+  // Explicit fields, not constructor parameter properties: a parameter property is
+  // the one TypeScript construct erasing types cannot handle, and it is what stops
+  // Node running these files directly.
+  readonly url: string;
+  readonly profileDir: string;
+
+  constructor(url: string, profileDir: string) {
     super(`Legal One needs someone to sign in. A browser window is open at ${url}; run again once that is done.`);
     this.name = 'LoginRequiredError';
+    this.url = url;
+    this.profileDir = profileDir;
   }
 }
 

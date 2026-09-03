@@ -27,6 +27,8 @@ is, and it is the thing to preserve if you change anything here.
 
 ```
 setup.ts            command  — sign in, check the tenant, configure, prove it.
+mcp.ts              command  — the MCP server, over stdio.
+src/mcp/            surface  — eighteen tools wrapping the library. No new rules.
 src/client.ts       mechanism — the HTTP surface. No policy, no auth decisions.
 src/cdp.ts          mechanism — a dependency-free DevTools Protocol client.
 src/session.ts      policy   — where a credential comes from, and when to ask a human.
@@ -42,6 +44,7 @@ src/xlsx.ts         mechanism — just enough of the xlsx format to read a repor
 src/aliases.json    config   — name drift and firm constants.
 src/template.json   config   — invariant create fields, per tenant.
 verify.ts           gate     — regenerates captured payloads and diffs them.
+mcp-check.ts        gate     — the agent-facing contract, offline.
 session-check.ts    gate     — expiry detection and renewal, offline.
 execute-check.ts    gate     — never book the same hour twice, offline.
 SKILL.md            the agent-facing contract.
@@ -92,6 +95,7 @@ wrong alias books hours against the wrong client and nothing surfaces it.
 ```bash
 bun run session-check.ts  # no fixtures needed — must print "36 passed"
 bun run execute-check.ts  # no fixtures needed — must print "8 passed"
+bun run mcp-check.ts      # no fixtures needed — must print "10 passed"
 bun run verify.ts         # once you have captured a fixture
 ```
 
@@ -339,6 +343,47 @@ Known parser hazards, all previously silent:
 - Some `*Hidden` companions are populated by JS at submit time, not rendered.
 
 ---
+
+## Using it from an agent
+
+`mcp.ts` exposes the library as an MCP server — eighteen tools, so an agent can
+compose rather than being handed one blessed workflow. Add it to
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "legalone": {
+      "command": "node",
+      "args": ["/absolute/path/to/legalone-timesheet/mcp.ts"]
+    }
+  }
+}
+```
+
+**Node, not Bun.** The MCP SDK imports `zod/v3`; zod 4 exports that subpath and Node
+resolves it, but Bun 1.4's resolver does not. The library and all four gates run
+under either.
+
+Three parts of the contract are worth knowing before wiring an agent to this.
+
+**Needing a person is a result, not a failure.** When a session has lapsed the tools
+return `sign-in required` with the URL of a window that is already open. An agent
+should say so and wait, never retry — nothing it can do alone will change the state.
+
+**Registering a matter is gated.** Matters cannot be deleted, and `createMatter`
+verifies only that one matter now matches the number, never what is inside it. So
+`propose_matter` issues a token for exactly the answers a person approved, and
+`create_matter` refuses any other — an agent cannot show one set of answers and file
+a different one, by mistake or by reconsidering mid-conversation.
+
+**Payloads are bounded.** `export_timesheet` returns a summary and a file path, never
+the rows. Searches fetch only the pages needed to answer, so their `total` is what was
+seen rather than what exists. `read_matter` returns the fields that have values, out
+of roughly four hundred.
+
+Exports land in `~/Library/Application Support/legalone-timesheet/exports`, or
+wherever `LEGALONE_EXPORT_DIR` points.
 
 ## Getting the data out
 

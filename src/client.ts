@@ -548,9 +548,20 @@ const parseFormFields = (html: string): Array<[string, string]> => {
   return fields.filter(([name]) => !/^(search|searchselectall|global-search)/.test(name));
 };
 
+/**
+ * Where the cookie comes from.
+ *
+ * A function rather than only a string so a caller can rotate the credential
+ * without rebuilding the client — the session outlives any one request, and a
+ * renewed cookie has to reach requests already in flight behind it. Resolving it
+ * per request is what makes that possible; deciding *when* to renew is policy and
+ * lives outside this file.
+ */
+export type CookieSource = string | (() => string | Promise<string>);
+
 export interface ClientOptions {
-  /** Full Cookie header from an authenticated browser session. */
-  cookie: string;
+  /** Full Cookie header from an authenticated browser session, or a source for one. */
+  cookie: CookieSource;
   baseUrl?: string;
 }
 
@@ -577,16 +588,28 @@ export class LegalOneTimesheet {
     return base.replace(/\/+$/, '');
   }
 
+  /**
+   * The one place a request learns its credential.
+   *
+   * Every fetch below goes through here. Before this existed the cookie was read
+   * at fourteen separate call sites, so rotating it meant constructing a new
+   * client — and any site added later would have quietly kept reading the old
+   * value. `extra` carries whatever else that particular request needs.
+   */
+  private async authHeaders(extra: Record<string, string> = {}): Promise<Record<string, string>> {
+    const { cookie } = this.options;
+    return { Cookie: typeof cookie === 'string' ? cookie : await cookie(), ...extra };
+  }
+
   private async post(url: string, body: string): Promise<string> {
     const response = await fetch(url, {
       method: 'POST',
       redirect: 'follow',
-      headers: {
+      headers: await this.authHeaders({
         'Content-Type': 'application/x-www-form-urlencoded',
-        Cookie: this.options.cookie,
         Origin: this.base,
         Referer: url,
-      },
+      }),
       body,
     });
 
@@ -713,7 +736,7 @@ export class LegalOneTimesheet {
    * `readMatter` is for inspection only.
    */
   private async readFormPairs(path: string): Promise<{ pairs: Array<[string, string]>; html: string }> {
-    const response = await fetch(`${this.base}${path}`, { headers: { Cookie: this.options.cookie } });
+    const response = await fetch(`${this.base}${path}`, { headers: await this.authHeaders() });
     const html = await response.text();
     assertSession(response, `form ${path}`, html);
     if (!response.ok) throw new Error(`cannot read form ${path}: ${response.status}`);
@@ -737,12 +760,11 @@ export class LegalOneTimesheet {
     const response = await fetch(`${this.base}${path}`, {
       method: 'POST',
       redirect: 'follow',
-      headers: {
+      headers: await this.authHeaders({
         'Content-Type': 'application/x-www-form-urlencoded',
-        Cookie: this.options.cookie,
         Origin: this.base,
         Referer: `${this.base}${path}`,
-      },
+      }),
       body: new URLSearchParams(pairs).toString(),
     });
     const html = await response.text();
@@ -813,7 +835,7 @@ export class LegalOneTimesheet {
   /** Permanently deletes a matter. Legal One warns this cannot be undone. */
   async deleteMatter(id: number, kind: MatterKind = 'processo'): Promise<void> {
     const before = await fetch(`${this.base}${MATTER_PATH[kind]}/Edit/${id}`, {
-      headers: { Cookie: this.options.cookie },
+      headers: await this.authHeaders(),
       redirect: 'manual',
     });
     await before.body?.cancel();
@@ -827,7 +849,7 @@ export class LegalOneTimesheet {
      */
     const response = await fetch(
       `${this.base}${MATTER_PATH[kind]}/Delete/${id}?isdeleteiManage=False`,
-      { headers: { Cookie: this.options.cookie }, redirect: 'follow' },
+      { headers: await this.authHeaders(), redirect: 'follow' },
     );
     const outcome = await response.text();
     assertSession(response, `delete ${kind} ${id}`, outcome);
@@ -839,7 +861,7 @@ export class LegalOneTimesheet {
     }
 
     const after = await fetch(`${this.base}${MATTER_PATH[kind]}/Edit/${id}`, {
-      headers: { Cookie: this.options.cookie },
+      headers: await this.authHeaders(),
       redirect: 'manual',
     });
     await after.body?.cancel();
@@ -858,7 +880,7 @@ export class LegalOneTimesheet {
   async lookup(path: string, term?: string, extra: Record<string, string> = {}): Promise<Array<Record<string, unknown>>> {
     const query = new URLSearchParams({ pageSize: '25', ...extra, ...(term ? { term } : {}) });
     const response = await fetch(`${this.base}${path}${path.includes('?') ? '&' : '?'}${query}`, {
-      headers: { Cookie: this.options.cookie, 'X-Requested-With': 'XMLHttpRequest' },
+      headers: await this.authHeaders({ 'X-Requested-With': 'XMLHttpRequest' }),
     });
     const body = await response.text();
     assertSession(response, `lookup ${path}`, body);
@@ -872,7 +894,7 @@ export class LegalOneTimesheet {
    */
   async readMatter(id: number, kind: MatterKind = 'processo'): Promise<Record<string, string>> {
     const response = await fetch(`${this.base}${MATTER_PATH[kind]}/Edit/${id}`, {
-      headers: { Cookie: this.options.cookie },
+      headers: await this.authHeaders(),
     });
     const html = await response.text();
     assertSession(response, `${kind} ${id}`, html);
@@ -971,7 +993,7 @@ export class LegalOneTimesheet {
   /** True when the entry exists. `Details` answers 200 for a live record, 404 otherwise. */
   async exists(id: number): Promise<boolean> {
     const response = await fetch(`${this.base}${PATH}/Details/${id}`, {
-      headers: { Cookie: this.options.cookie },
+      headers: await this.authHeaders(),
       redirect: 'manual',
     });
     await response.body?.cancel();
@@ -1001,7 +1023,7 @@ export class LegalOneTimesheet {
     }
 
     const response = await fetch(`${this.base}${PATH}/Delete/${id}`, {
-      headers: { Cookie: this.options.cookie },
+      headers: await this.authHeaders(),
       redirect: 'follow',
     });
     await response.body?.cancel();
@@ -1049,7 +1071,7 @@ export class LegalOneTimesheet {
     });
 
     const response = await fetch(`${this.base}${PATH}/Search?${query}`, {
-      headers: { Cookie: this.options.cookie },
+      headers: await this.authHeaders(),
     });
 
     const html = await response.text();
@@ -1082,7 +1104,7 @@ export class LegalOneTimesheet {
         Page: String(page),
       });
       const response = await fetch(`${this.base}/processos/processos/Search?${query}`, {
-        headers: { Cookie: this.options.cookie },
+        headers: await this.authHeaders(),
       });
       const html = await response.text();
       assertSession(response, `processo search "${term}"`, html);
@@ -1111,7 +1133,7 @@ export class LegalOneTimesheet {
       Search: term,
     });
     const response = await fetch(`${this.base}/contatos/contatos/Search?${query}`, {
-      headers: { Cookie: this.options.cookie },
+      headers: await this.authHeaders(),
     });
     const html = await response.text();
     assertSession(response, `contato search "${term}"`, html);
@@ -1154,12 +1176,11 @@ export class LegalOneTimesheet {
     const path = `${MATTER_PATH.incidente}/Edit`;
     const prefill = await fetch(`${this.base}${MATTER_PATH.incidente}/FillFormWithLinkedMatter`, {
       method: 'POST',
-      headers: {
+      headers: await this.authHeaders({
         'Content-Type': 'application/x-www-form-urlencoded',
-        Cookie: this.options.cookie,
         Origin: this.base,
         Referer: `${this.base}${path}`,
-      },
+      }),
       body: new URLSearchParams({ vinculoToCopy: String(parentId), VinculoId: String(parentId) }).toString(),
     });
     const prefillHtml = await prefill.text();

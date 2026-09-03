@@ -20,7 +20,8 @@ possible, and it is why `verify.ts` is the gate before any write.
 
 1. Open Legal One in the browser with DevTools on the **Network** tab.
 2. Create a timesheet entry by hand, normally.
-3. Find the `POST` to `/TimeSheet/HorasTrabalhadas/CreateHoraTrabalhada`.
+3. Find the `POST` to `/TimeSheet/HorasTrabalhadas/EditHoraTrabalhada` — create and
+   update share one endpoint, and a create is the one with an empty `Id`.
 4. Copy the **raw form body** — the urlencoded string, not the parsed key/value
    view DevTools shows by default.
 5. Save it here as `<anything>.json`:

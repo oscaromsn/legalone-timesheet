@@ -326,6 +326,56 @@ const permissionDenied = (html: string): boolean =>
     html.replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n))),
   );
 
+/**
+ * Raised when Legal One answered with the login page instead of the page asked for.
+ *
+ * Separate from a generic Error so a caller can tell "renew the cookie" apart from
+ * "the request was wrong", and retry the whole batch rather than reasoning about a
+ * result it should not trust.
+ */
+export class SessionExpiredError extends Error {
+  constructor(what: string) {
+    super(
+      `Legal One returned the login page for ${what} — the session cookie has expired. ` +
+        'Refresh LEGALONE_COOKIE from an authenticated browser session and run again.',
+    );
+    this.name = 'SessionExpiredError';
+  }
+}
+
+/*
+ * An expired session is the one failure this client cannot afford to read past.
+ *
+ * Forms auth answers 302 to the login form, and `redirect: 'follow'` turns that
+ * into a 200 whose body is the login page. Every parser here then reads that page
+ * as the thing it asked for: the grid parsers find no rows and report the client as
+ * unregistered, and `readFormPairs` returns the *login* form's fields — which, if
+ * submitted, is a form post built from the wrong form entirely.
+ *
+ * Two signatures, because neither alone covers every call:
+ *   URL   — forms auth appends ?ReturnUrl=, and the path itself names the login.
+ *           Absent on a body-only check, and empty on a synthesised Response.
+ *   body  — a password input. None of the pages this client requests has one, so
+ *           finding one means the response is not the page that was asked for.
+ */
+const LOGIN_URL = /[?&]ReturnUrl=|\/log(?:in|on)(?:\b|\.)/i;
+const LOGIN_BODY = /<input[^>]*\btype="password"/i;
+
+/**
+ * Throws if `response` (or `html`, when the body has been read) is the login page.
+ *
+ * `what` names the call, so the error says which request hit the expired session
+ * rather than leaving the caller to guess.
+ */
+const assertSession = (response: Response, what: string, html?: string): void => {
+  const redirected = response.status >= 300 && response.status < 400;
+  const location = redirected ? (response.headers.get('location') ?? '') : '';
+  if (LOGIN_URL.test(response.url) || (location && LOGIN_URL.test(location))) {
+    throw new SessionExpiredError(what);
+  }
+  if (html !== undefined && LOGIN_BODY.test(html)) throw new SessionExpiredError(what);
+};
+
 const decodeEntities = (s: string): string =>
   s
     .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
@@ -491,6 +541,7 @@ export class LegalOneTimesheet {
     });
 
     const html = await response.text();
+    assertSession(response, `POST ${url}`, html);
 
     if (!response.ok) {
       throw new Error(`Legal One returned ${response.status} ${response.statusText}`);
@@ -613,8 +664,9 @@ export class LegalOneTimesheet {
    */
   private async readFormPairs(path: string): Promise<{ pairs: Array<[string, string]>; html: string }> {
     const response = await fetch(`${this.base}${path}`, { headers: { Cookie: this.options.cookie } });
-    if (!response.ok) throw new Error(`cannot read form ${path}: ${response.status}`);
     const html = await response.text();
+    assertSession(response, `form ${path}`, html);
+    if (!response.ok) throw new Error(`cannot read form ${path}: ${response.status}`);
     return { pairs: parseFormFields(html), html };
   }
 
@@ -644,6 +696,7 @@ export class LegalOneTimesheet {
       body: new URLSearchParams(pairs).toString(),
     });
     const html = await response.text();
+    assertSession(response, `POST ${path}`, html);
     if (response.status === 405) {
       throw new Error(
         permissionDenied(html)
@@ -714,6 +767,7 @@ export class LegalOneTimesheet {
       redirect: 'manual',
     });
     await before.body?.cancel();
+    assertSession(before, `${kind} ${id}`);
     if (before.status !== 200) throw new Error(`refusing to delete ${kind} ${id}: it does not exist`);
 
     /*
@@ -726,6 +780,7 @@ export class LegalOneTimesheet {
       { headers: { Cookie: this.options.cookie }, redirect: 'follow' },
     );
     const outcome = await response.text();
+    assertSession(response, `delete ${kind} ${id}`, outcome);
     if (permissionDenied(outcome)) {
       throw new Error(
         `cannot delete ${kind} ${id}: your Legal One user lacks permission to delete matters ` +
@@ -738,6 +793,7 @@ export class LegalOneTimesheet {
       redirect: 'manual',
     });
     await after.body?.cancel();
+    assertSession(after, `${kind} ${id} after delete`);
     if (after.status === 200) throw new Error(`delete ${kind} ${id} did not take effect`);
   }
 
@@ -754,8 +810,10 @@ export class LegalOneTimesheet {
     const response = await fetch(`${this.base}${path}${path.includes('?') ? '&' : '?'}${query}`, {
       headers: { Cookie: this.options.cookie, 'X-Requested-With': 'XMLHttpRequest' },
     });
+    const body = await response.text();
+    assertSession(response, `lookup ${path}`, body);
     if (!response.ok) throw new Error(`lookup ${path} failed: ${response.status}`);
-    return ((await response.json()) as { Rows?: Array<Record<string, unknown>> }).Rows ?? [];
+    return (JSON.parse(body) as { Rows?: Array<Record<string, unknown>> }).Rows ?? [];
   }
 
   /**
@@ -766,6 +824,8 @@ export class LegalOneTimesheet {
     const response = await fetch(`${this.base}${MATTER_PATH[kind]}/Edit/${id}`, {
       headers: { Cookie: this.options.cookie },
     });
+    const html = await response.text();
+    assertSession(response, `${kind} ${id}`, html);
     if (!response.ok) throw new Error(`cannot read ${kind} ${id}: ${response.status}`);
     /*
      * Keep the FIRST value for each name, which is what ASP.NET binds. The form
@@ -773,7 +833,7 @@ export class LegalOneTimesheet {
      * then the hidden `false` — so last-wins reports the opposite of the truth.
      */
     const fields: Record<string, string> = {};
-    for (const [name, value] of parseFormFields(await response.text())) {
+    for (const [name, value] of parseFormFields(html)) {
       if (!(name in fields)) fields[name] = value;
     }
     return fields;
@@ -865,6 +925,14 @@ export class LegalOneTimesheet {
       redirect: 'manual',
     });
     await response.body?.cancel();
+    /*
+     * `redirect: 'manual'` keeps the 302, so an expired session arrives here as a
+     * non-200 and would read as "the entry is gone". It is the same shape as a real
+     * absence and nothing downstream could tell them apart: `delete` would refuse a
+     * live entry as missing, and its post-delete check would call a failed delete
+     * done. Distinguish before interpreting the status.
+     */
+    assertSession(response, `entry ${id}`);
     return response.status === 200;
   }
 
@@ -887,6 +955,7 @@ export class LegalOneTimesheet {
       redirect: 'follow',
     });
     await response.body?.cancel();
+    assertSession(response, `delete ${id}`);
     if (!response.ok) throw new Error(`delete ${id} failed: ${response.status}`);
 
     if (await this.exists(id)) throw new Error(`delete ${id} reported success but the entry is still there`);
@@ -933,8 +1002,10 @@ export class LegalOneTimesheet {
       headers: { Cookie: this.options.cookie },
     });
 
+    const html = await response.text();
+    assertSession(response, `timesheet search ${from}–${to}`, html);
     if (!response.ok) throw new Error(`search failed: ${response.status}`);
-    return response.text();
+    return html;
   }
 
   /**
@@ -963,8 +1034,10 @@ export class LegalOneTimesheet {
       const response = await fetch(`${this.base}/processos/processos/Search?${query}`, {
         headers: { Cookie: this.options.cookie },
       });
+      const html = await response.text();
+      assertSession(response, `processo search "${term}"`, html);
       if (!response.ok) throw new Error(`processo search failed: ${response.status}`);
-      const batch = parseProcessos(await response.text());
+      const batch = parseProcessos(html);
       if (batch.length === 0) break;
       all.push(...batch);
     }
@@ -990,8 +1063,9 @@ export class LegalOneTimesheet {
     const response = await fetch(`${this.base}/contatos/contatos/Search?${query}`, {
       headers: { Cookie: this.options.cookie },
     });
-    if (!response.ok) throw new Error(`contato search failed: ${response.status}`);
     const html = await response.text();
+    assertSession(response, `contato search "${term}"`, html);
+    if (!response.ok) throw new Error(`contato search failed: ${response.status}`);
 
     const headers = [...(html.match(/<thead>([\s\S]*?)<\/thead>/)?.[1] ?? '')
       .matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => stripTags(m[1] ?? ''));
@@ -1038,8 +1112,10 @@ export class LegalOneTimesheet {
       },
       body: new URLSearchParams({ vinculoToCopy: String(parentId), VinculoId: String(parentId) }).toString(),
     });
+    const prefillHtml = await prefill.text();
+    assertSession(prefill, `incidente prefill from ${parentId}`, prefillHtml);
     if (!prefill.ok) throw new Error(`could not prefill from parent ${parentId}: ${prefill.status}`);
-    const pairs = parseFormFields(await prefill.text());
+    const pairs = parseFormFields(prefillHtml);
     if (pairs.length === 0) throw new Error(`parent ${parentId} returned no form to build on`);
 
     const names = new Set(pairs.map(([name]) => name));

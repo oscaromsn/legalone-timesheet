@@ -57,6 +57,7 @@ Both copied files are gitignored. They carry firm and client identity, so they a
 configuration you fill in, never something this repo ships filled.
 
 ```bash
+bun run session-check.ts # no fixtures needed — must print "21 passed"
 bun run verify.ts        # once you have captured a fixture
 ```
 
@@ -86,9 +87,14 @@ chmod 600 .env
 echo .env >> .gitignore
 ```
 
-It expires when that browser session ends. If calls suddenly return login pages,
-refresh it. For anything beyond experimentation, move it to the keychain
-(`security add-generic-password`) and read it at runtime instead of keeping a dotfile.
+It expires when that browser session ends. Every call detects that and raises
+`SessionExpiredError` naming the request that hit it, so an expired cookie stops the
+run instead of being read as data — refresh it and run again. For anything beyond
+experimentation, move it to the keychain (`security add-generic-password`) and read
+it at runtime instead of keeping a dotfile.
+
+There is no automatic acquisition or refresh. Obtaining the cookie is the manual
+DevTools step above, both on first use and after it expires.
 
 ### Configure for your firm
 

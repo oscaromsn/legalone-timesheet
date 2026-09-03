@@ -14,7 +14,12 @@ verifies itself by reading back.
 
 `LEGALONE_COOKIE` in `.env` is a full browser session cookie, and it is the entire
 credential — there is no anti-forgery token. It expires when that browser session
-ends. If calls start failing with a login page, that is the first thing to check.
+ends, and there is no automatic refresh: ask the lawyer to re-copy it from DevTools.
+
+A `SessionExpiredError` from any call means exactly that. Stop the batch and report
+it — do not retry, and do not treat any result from that run as real. An expired
+session used to read as data: the searches came back empty, so a registered client
+was reported as "not registered".
 
 ```ts
 const client = new LegalOneTimesheet({ cookie: process.env.LEGALONE_COOKIE! });

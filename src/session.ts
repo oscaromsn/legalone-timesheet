@@ -236,3 +236,54 @@ export async function ensureSession(options: SessionOptions = {}): Promise<Sessi
   visible.cdp.close();
   return { kind: 'login-required', url: target, profileDir };
 }
+
+/** Raised when only a person can proceed. A window is open at `url`. */
+export class LoginRequiredError extends Error {
+  constructor(readonly url: string, readonly profileDir: string) {
+    super(`Legal One needs someone to sign in. A browser window is open at ${url}; run again once that is done.`);
+    this.name = 'LoginRequiredError';
+  }
+}
+
+export interface BrowserSession {
+  /** Pass straight to `ClientOptions.cookie`. */
+  cookie: () => Promise<string>;
+  /** Throws away the cached session and mints a fresh one. */
+  renew: () => Promise<void>;
+  /** The tenant, known once a session has been obtained. */
+  tenant: () => string | null;
+}
+
+/**
+ * A cached, renewable session backed by the connector's browser profile.
+ *
+ * Cached deliberately, not as an optimisation. Signing in again appears to
+ * invalidate the previous `.ASPXAUTH` on this tenant — a second sign-in mid-run
+ * would pull the credential out from under the requests already using it. So a
+ * session is obtained once and reused, and only `renew()` replaces it.
+ */
+export function browserSession(options: SessionOptions = {}): BrowserSession {
+  let cached: string | null = null;
+  let tenant: string | null = options.tenant ?? null;
+  /** Concurrent callers share one obtain, rather than racing to sign in twice. */
+  let inFlight: Promise<string> | null = null;
+
+  const obtain = async (): Promise<string> => {
+    const result = await ensureSession({ ...options, ...(tenant ? { tenant } : {}) });
+    if (result.kind === 'login-required') throw new LoginRequiredError(result.url, result.profileDir);
+    cached = `.ASPXAUTH=${result.cookie}`;
+    tenant = result.tenant;
+    return cached;
+  };
+
+  const once = (): Promise<string> => {
+    inFlight ??= obtain().finally(() => { inFlight = null; });
+    return inFlight;
+  };
+
+  return {
+    cookie: async () => cached ?? (await once()),
+    renew: async () => { cached = null; await once(); },
+    tenant: () => tenant,
+  };
+}

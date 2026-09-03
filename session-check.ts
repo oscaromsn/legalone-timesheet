@@ -13,6 +13,7 @@
  * Add a case here whenever a new fetch site is added to the client.
  */
 import { LegalOneTimesheet, SessionExpiredError, type Link } from './src/client.ts';
+import { withRenewal } from './src/auth.ts';
 import { planEntries } from './src/resolver.ts';
 
 const TENANT = 'https://tenant.novajus.com.br';
@@ -110,6 +111,73 @@ try {
 await expectExpired('exists', 'manual', (c) => c.exists(1));
 await expectExpired('delete', 'manual', (c) => c.delete(1));
 await expectExpired('deleteMatter', 'manual', (c) => c.deleteMatter(1));
+
+/*
+ * Renewal policy. Pure logic — no browser, no network, no client: what is being
+ * checked is which recovery a caller gets, and how many times each side runs.
+ */
+const check = (name: string, condition: boolean, detail = '') => {
+  if (condition) { pass++; console.log(`ok    ${name}`); }
+  else { fail++; console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`); }
+};
+
+{
+  // An operation that proves its own result: retry after one renewal.
+  let runs = 0, renewals = 0;
+  const value = await withRenewal(
+    async () => { runs++; if (runs === 1) throw new SessionExpiredError('read'); return 'ok'; },
+    'retry',
+    async () => { renewals++; },
+  );
+  check('renewal: idempotent op retries once', runs === 2 && renewals === 1 && value === 'ok', `runs=${runs} renewals=${renewals}`);
+}
+
+{
+  // The write landed before the expiry: adopt it, never run again.
+  let runs = 0;
+  const value = await withRenewal(
+    async () => { runs++; throw new SessionExpiredError('create'); },
+    async () => ({ landed: true, value: 42 }),
+    async () => {},
+  );
+  check('renewal: guarded op adopts work that landed', runs === 1 && value === 42, `runs=${runs}`);
+}
+
+{
+  // Absence proved, so one more attempt cannot duplicate anything.
+  let runs = 0;
+  const value = await withRenewal(
+    async () => { runs++; if (runs === 1) throw new SessionExpiredError('create'); return 7; },
+    async () => ({ landed: false }),
+    async () => {},
+  );
+  check('renewal: guarded op re-runs only once absence is proved', runs === 2 && value === 7, `runs=${runs}`);
+}
+
+{
+  // A second expiry is not a cookie problem. Propagate rather than loop.
+  let runs = 0, renewals = 0;
+  let raised: unknown = null;
+  try {
+    await withRenewal(
+      async () => { runs++; throw new SessionExpiredError('read'); },
+      'retry',
+      async () => { renewals++; },
+    );
+  } catch (e) { raised = e; }
+  check('renewal: does not loop when renewing did not help',
+    runs === 2 && renewals === 1 && raised instanceof SessionExpiredError, `runs=${runs} renewals=${renewals}`);
+}
+
+{
+  // Anything that is not an expiry is none of this policy's business.
+  let renewals = 0;
+  let message = '';
+  try {
+    await withRenewal(async () => { throw new Error('rejected by Legal One'); }, 'retry', async () => { renewals++; });
+  } catch (e) { message = (e as Error).message; }
+  check('renewal: leaves other failures alone', renewals === 0 && message === 'rejected by Legal One');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -57,7 +57,7 @@ Both copied files are gitignored. They carry firm and client identity, so they a
 configuration you fill in, never something this repo ships filled.
 
 ```bash
-bun run session-check.ts # no fixtures needed — must print "31 passed"
+bun run session-check.ts # no fixtures needed — must print "36 passed"
 bun run verify.ts        # once you have captured a fixture
 ```
 

@@ -41,6 +41,14 @@ const ONEPASS_ENTRY = 'https://signon.thomsonreuters.com/?productId=L1NJ';
 /** Hosts in the auth chain that are never a firm's tenant. */
 const NOT_A_TENANT = /^(login|signon|auth)\./i;
 
+/**
+ * Where the identity provider renders a prompt.
+ *
+ * A silent renewal passes straight through these, so their appearance proves
+ * nothing — what matters is the chain coming to rest on one.
+ */
+const IDP_HOST = /^(signon|auth)\.thomsonreuters\.com$/i;
+
 export type SessionResult =
   | { kind: 'ready'; cookie: string; tenant: string }
   /** A human has to sign in. A visible window is open at `url`; call again after. */
@@ -171,12 +179,27 @@ async function navigate(cdp: Cdp, url: string, timeoutMs: number): Promise<{ coo
     await cdp.send('Page.enable', {}, sessionId);
     await cdp.send('Page.navigate', { url }, sessionId);
 
+    /*
+     * Poll for the cookie, but give up early once the chain has clearly stopped at
+     * a sign-in page. Waiting out the full timeout meant nearly thirty seconds of
+     * nothing before the window a person is supposed to type into even appeared —
+     * measured on a cold profile. A silent renewal passes through the same hosts in
+     * a fraction of a second, so resting there is the signal, not visiting.
+     */
     let cookie: string | null = null;
+    let settledOnIdp = 0;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 250));
       cookie = await sessionCookie(cdp);
       if (cookie) break;
+
+      const here = await cdp.send<{ result: { value: string } }>(
+        'Runtime.evaluate', { expression: 'location.host', returnByValue: true }, sessionId,
+      ).catch(() => ({ result: { value: '' } }));
+      settledOnIdp = IDP_HOST.test(here.result.value) ? settledOnIdp + 1 : 0;
+      // Eight consecutive polls, so a hop through the IdP is not mistaken for a stop.
+      if (settledOnIdp >= 8) break;
     }
     const final = await cdp.send<{ result: { value: string } }>(
       'Runtime.evaluate', { expression: 'location.href', returnByValue: true }, sessionId,

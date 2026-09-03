@@ -24,5 +24,7 @@
     "naturezaText": "<Natureza>",
     "contatoEscritorioId": "<firm-contact-id>",
     "contatoEscritorioText": "<FIRM NAME AS REGISTERED>"
-  }
+  },
+  "titleFormat": "[{seq2}-{check}] {SHORTNAME} - {DESCRIPTION}",
+  "_titleFormat_comment": "How this firm names a matter. Placeholders: {seq2} last two digits of the CNJ sequential, {check} its check digits, {year} {tribunal} {unit} the rest, {shortName} {description} as given, and {SHORTNAME} {DESCRIPTION} uppercased. Set it to null if the firm has no fixed convention — then no title is suggested, which is better than suggesting someone else’s."
 }

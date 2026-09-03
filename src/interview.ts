@@ -47,16 +47,31 @@ export const parseCnj = (cnj: string): CnjParts | null => {
 };
 
 /**
- * The house title format: last two digits of the sequential, the check digits,
- * then the client's short name and a description.
+ * Builds a matter title from the firm's own convention.
  *
- * Verified against ten existing matters. One outlier ([23-81] on 1081983-81) does
- * not fit and appears to be a typo in that record rather than a second convention.
+ * The convention lives in `aliases.json`, not here. It was a house format —
+ * verified against ten matters of one practice, with one outlier that looked like a
+ * typo — and a house format hardcoded in a shared client is just another firm's
+ * convention imposed on everyone else. A firm with no fixed naming sets it to null
+ * and gets no suggestion, which is better than getting someone else's.
  */
 export const titleFor = (cnj: string, shortName: string, description: string): string | null => {
+  const format = config.titleFormat;
+  if (!format) return null;
   const parts = parseCnj(cnj);
   if (!parts) return null;
-  return `[${parts.sequential.slice(-2)}-${parts.check}] ${shortName.toUpperCase()} - ${description.toUpperCase()}`;
+  const values: Record<string, string> = {
+    seq2: parts.sequential.slice(-2),
+    check: parts.check,
+    year: parts.year,
+    tribunal: parts.tribunal,
+    unit: parts.unit,
+    shortName,
+    description,
+    SHORTNAME: shortName.toUpperCase(),
+    DESCRIPTION: description.toUpperCase(),
+  };
+  return format.replace(/\{(\w+)\}/g, (whole, key: string) => values[key] ?? whole);
 };
 
 export interface Choice {
@@ -168,10 +183,64 @@ export async function proposeMatter(
  * `answers` are merged over `derived`; anything still missing that the form
  * requires will be rejected by Legal One rather than silently defaulted.
  */
+/**
+ * Checks that a set of answers is complete enough to file a matter.
+ *
+ * `Choice.field` is a stem, not a form field: `TipoAcao` is answered by writing
+ * both `TipoAcaoId` and `TipoAcaoText`. Legal One accepts an id without its label —
+ * it stores the id and leaves the display half blank, producing a record that looks
+ * filed and reads as half-written, with no error anywhere. Matters cannot be
+ * deleted, so that is permanent.
+ *
+ * Returns the complaints, empty when the answers are usable.
+ */
+export const validateAnswers = (proposal: MatterProposal, answers: Record<string, string>): string[] => {
+  const problems: string[] = [];
+
+  for (const choice of proposal.choices) {
+    const id = answers[`${choice.field}Id`];
+    const text = answers[`${choice.field}Text`];
+    if (!id && !text) problems.push(`${choice.label}: unanswered (needs ${choice.field}Id and ${choice.field}Text)`);
+    else if (!id) problems.push(`${choice.label}: ${choice.field}Text was given without ${choice.field}Id`);
+    else if (!text) problems.push(`${choice.label}: ${choice.field}Id was given without ${choice.field}Text`);
+    else if (choice.options.length > 0 && !choice.options.some((o) => o.id === id)) {
+      problems.push(`${choice.label}: "${id}" is not one of the ${choice.options.length} ids this tenant offered`);
+    }
+  }
+
+  // The same pairing rule, applied to anything else the caller supplied.
+  for (const name of Object.keys(answers)) {
+    if (!name.endsWith('Id')) continue;
+    const stem = name.slice(0, -2);
+    if (proposal.choices.some((c) => c.field === stem)) continue; // already reported above
+    if (answers[name] && answers[`${stem}Text`] === undefined) {
+      problems.push(`${name} was given without ${stem}Text`);
+    }
+  }
+
+  return problems;
+};
+
+/**
+ * Files the matter. Refuses rather than filing something half-answered, because a
+ * matter cannot be deleted and `createMatter`'s own verification only checks that
+ * exactly one matter now matches the number — never what is inside it.
+ *
+ * `proposal.mustAsk` is free-text guidance for a person and cannot be checked
+ * mechanically; it is repeated in the error so nothing is quietly dropped.
+ */
 export async function createFromProposal(
   client: LegalOneTimesheet,
   proposal: MatterProposal,
   answers: Record<string, string>,
 ): Promise<number> {
+  const problems = validateAnswers(proposal, answers);
+  if (problems.length > 0) {
+    throw new Error(
+      `refusing to file a matter from incomplete answers — matters cannot be deleted:\n  ` +
+        problems.join('\n  ') +
+        (proposal.mustAsk.length > 0 ? `\nAlso still open: ${proposal.mustAsk.join('; ')}` : ''),
+    );
+  }
   return client.createMatter({ ...proposal.derived, ...answers });
 }

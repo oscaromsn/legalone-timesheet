@@ -11,6 +11,7 @@
  * bad reason to either stall or proceed.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { LegalOneTimesheet, type Link } from './src/client.ts';
 import { browserSession, LoginRequiredError } from './src/session.ts';
 import { diagnose, format as formatDiagnosis } from './src/doctor.ts';
@@ -83,7 +84,7 @@ const overrides = (): Record<string, string> =>
  * billing-relevant and cannot be inferred; overwriting one would silently redirect
  * hours. Same for `internal.prefixes` and `titleFormat`: conventions a person chose.
  */
-function mergeAliases(discovery: Discovery): {
+function mergeAliases(discovery: Discovery, answered: Record<string, string> = {}): {
   merged: Record<string, unknown>;
   kept: string[];
   adoptions: Adoption[];
@@ -95,7 +96,7 @@ function mergeAliases(discovery: Discovery): {
   if (base['titleFormat']) kept.push('titleFormat');
 
   const defaults = { ...(base['defaults'] as Record<string, string>) };
-  const chosen = overrides();
+  const chosen = { ...answered, ...overrides() };
   const adoptions: Adoption[] = [];
 
   const put = (idKey: string, textKey: string) => {
@@ -129,6 +130,59 @@ function mergeAliases(discovery: Discovery): {
   put('naturezaId', 'naturezaText');
 
   return { merged: { ...base, defaults }, kept, adoptions };
+}
+
+/**
+ * Asks about the values the firm's own records could not settle.
+ *
+ * Only when someone is actually at a terminal. Everywhere else — an agent, CI, a
+ * redirected run — the questions are reported and the process returns, which is the
+ * same shape `login-required` already uses for "a person is needed here". Blocking
+ * on stdin that nobody will type into is the one behaviour that is never right.
+ *
+ * A flag alone was not enough. `--set=responsavelId=38` asks someone to know that 38
+ * is a particular lawyer; the evidence is on screen with names attached, and picking
+ * from a list is the part a person can do without translation.
+ */
+async function askContested(discovery: Discovery, adoptions: Adoption[]): Promise<Record<string, string>> {
+  const open = adoptions.filter((a) => a.verdict === 'kept' || a.verdict === 'unresolved');
+  if (open.length === 0) return {};
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answers: Record<string, string> = {};
+  try {
+    for (const adoption of open) {
+      const finding = findingFor(discovery, adoption.key);
+      const options = finding?.candidates ?? [];
+      const current = adoption.verdict === 'kept' ? adoption.value : null;
+
+      say();
+      say(`${finding?.label ?? adoption.key} — ${adoption.why}`);
+      say();
+      options.forEach((c, i) => {
+        say(`  ${i + 1}) ${c.value.padEnd(6)} ${c.text.slice(0, 56).padEnd(58)} ${c.count} record(s)`);
+      });
+      if (current) say(`  ${options.length + 1}) keep what is configured (${current})`);
+      if (adoption.key === 'responsavelId') {
+        say();
+        say('  Note: the sample is the matters you book time to, so it leans toward');
+        say('  whoever is responsável on your own work — not necessarily the default');
+        say('  for a matter the firm files next.');
+      }
+      say();
+
+      for (;;) {
+        const raw = (await rl.question('  > ')).trim();
+        const n = Number(raw);
+        if (Number.isInteger(n) && n >= 1 && n <= options.length) { answers[adoption.key] = options[n - 1]!.value; break; }
+        if (current && n === options.length + 1) break; // keep: no override needed
+        say(`  Pick 1–${options.length + (current ? 1 : 0)}.`);
+      }
+    }
+  } finally {
+    rl.close();
+  }
+  return answers;
 }
 
 /**
@@ -213,27 +267,50 @@ async function main(): Promise<number> {
   say(formatTemplate(candidate));
   say();
 
-  const { merged, kept, adoptions } = mergeAliases(discovery);
-  const defaults = merged['defaults'] as Record<string, string>;
-  const unresolved = adoptions.filter((a) => a.verdict === 'unresolved');
-  const held = adoptions.filter((a) => a.verdict === 'kept');
-
-  say('— what would be written —');
-  for (const a of adoptions) {
-    const shown = a.verdict === 'unresolved' ? '(none)' : a.value;
-    say(`  ${a.verdict.padEnd(11)} ${a.key.padEnd(24)} ${shown.padEnd(8)} ${a.why}`);
-  }
-  if (held.length > 0 || unresolved.length > 0) {
+  let { merged, kept, adoptions } = mergeAliases(discovery);
+  const report = (label: string) => {
+    say(`— ${label} —`);
+    for (const a of adoptions) {
+      const shown = a.verdict === 'unresolved' ? '(none)' : a.value;
+      say(`  ${a.verdict.padEnd(11)} ${a.key.padEnd(24)} ${shown.padEnd(8)} ${a.why}`);
+    }
     say();
-    say('The firm\'s records do not settle every value, and a mode is not a decision.');
-    say('Settle one with, for example:  bun run setup --write --set=responsavelId=38');
-  }
-  say();
+  };
+  report('what would be written');
+
+  const contested = () => adoptions.filter((a) => a.verdict === 'kept' || a.verdict === 'unresolved');
 
   if (!write) {
+    if (contested().length > 0) {
+      say('The firm\'s records do not settle every value, and a mode is not a decision.');
+      say('Re-run with --write and you will be asked, or answer up front:');
+      say('  bun run setup --write --set=responsavelId=38');
+      say();
+    }
     say('Nothing was written. Re-run with --write to commit this and prove it with a probe entry.');
     return 0;
   }
+
+  if (contested().length > 0) {
+    if (process.stdin.isTTY) {
+      const answers = await askContested(discovery, contested());
+      if (Object.keys(answers).length > 0) {
+        ({ merged, kept, adoptions } = mergeAliases(discovery, answers));
+        say();
+        report('what will be written');
+      }
+    } else {
+      say('These values are not settled by the records, and nobody is at a terminal to decide:');
+      for (const a of contested()) say(`  ${a.key.padEnd(24)} ${a.why}`);
+      say();
+      say('Answer them and run again, for example:  --set=responsavelId=38');
+      return 3;
+    }
+  }
+
+  const defaults = merged['defaults'] as Record<string, string>;
+  const unresolved = adoptions.filter((a) => a.verdict === 'unresolved');
+  const held = adoptions.filter((a) => a.verdict === 'kept');
 
   if (unresolved.length > 0) {
     say(`Refusing to write: ${unresolved.map((a) => a.key).join(', ')} could not be settled and have no usable`);

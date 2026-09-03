@@ -45,9 +45,15 @@ export interface Diagnosis {
 }
 
 export interface DoctorOptions {
-  /** A date range with entries in it. Defaults to the last 120 days. */
+  /** A date range with entries in it. Defaults to the last `days`. */
   from?: string;
   to?: string;
+  /**
+   * How far back to look. Every check reads real records, so this is the whole cost
+   * of the run — a wide window is a slow diagnosis, and a caller on a clock (an MCP
+   * client, say) should narrow it rather than wait.
+   */
+  days?: number;
   /** A matter id to read the form assumptions off. Discovered from entries if absent. */
   matterId?: number;
   installedTemplate?: Array<[string, string]>;
@@ -79,7 +85,8 @@ export async function diagnose(client: LegalOneTimesheet, options: DoctorOptions
   };
 
   const now = options.now ?? new Date();
-  const from = options.from ?? ddmmyyyy(new Date(now.getTime() - 120 * 86_400_000));
+  const days = options.days ?? 120;
+  const from = options.from ?? ddmmyyyy(new Date(now.getTime() - days * 86_400_000));
   const to = options.to ?? ddmmyyyy(now);
 
   let entries: TimeEntryRecord[] = [];
@@ -89,13 +96,20 @@ export async function diagnose(client: LegalOneTimesheet, options: DoctorOptions
   await run('grid parses at all', async () => {
     entries = await client.listEntries(from, to);
     const html = await client.searchRaw(from, to, 1);
-    // A page full of <tr> that yields no records means the row classes changed —
-    // and every caller reads zero records as "nothing exists".
-    const rows = (html.match(/<tr\b/g) ?? []).length;
     const parsed = entries.length;
+    /*
+     * Telling "no results" apart from "the markup changed" needs a positive signal,
+     * and counting rows is not one: a header, a filter row and an empty-state row all
+     * look like rows. Two earlier attempts failed on exactly that.
+     *
+     * A record carries a link to its own detail page. If the page holds those and the
+     * parser found nothing, the row markup moved; if it holds none, the range is
+     * simply empty.
+     */
+    const recordLinks = (html.match(/HorasTrabalhadas\/Details\/\d+/g) ?? []).length;
     if (parsed > 0) add('grid parses at all', 'ok', `${parsed} entries parsed from ${from}–${to}`);
-    else if (rows > 3) add('grid parses at all', 'fail', `the page has ${rows} <tr> but no row matched; the grid markup differs`);
-    else add('grid parses at all', 'warn', `no entries in ${from}–${to}, so nothing could be checked`);
+    else if (recordLinks > 0) add('grid parses at all', 'fail', `the page links ${recordLinks} record(s) but the parser matched none; the row markup differs`);
+    else add('grid parses at all', 'warn', `no entries between ${from} and ${to}, so this could not be checked — widen the range`);
   });
 
   await run('grid columns', async () => {
@@ -180,10 +194,18 @@ export async function diagnose(client: LegalOneTimesheet, options: DoctorOptions
   });
 
   await run('configured ids', async () => {
-    const found = await discover(client, { days: 120, maxEntries: 10, maxMatters: 8, now });
+    const found = await discover(client, { days, maxEntries: 10, maxMatters: 8, now });
     const unresolved = found.findings.filter((f) => f.best === null).map((f) => f.label);
     const contested = found.findings.filter((f) => f.candidates.length > 1).map((f) => f.label);
-    if (unresolved.length > 0) {
+    /*
+     * Nothing sampled is not agreement. Reporting "all values agreed" over zero
+     * records would be a check that passes because it never ran, which is worse than
+     * one that fails.
+     */
+    if (found.findings.length === 0 || found.entriesSampled === 0) {
+      add('configured ids', 'warn',
+        `nothing to check: ${found.entriesSampled} entries and ${found.mattersSampled} matters in range. Widen the window.`);
+    } else if (unresolved.length > 0) {
       add('configured ids', 'fail', `nothing found for: ${unresolved.join(', ')}`);
     } else if (contested.length > 0) {
       add('configured ids', 'warn', `the firm's own records disagree on: ${contested.join(', ')} — read the evidence before adopting`);

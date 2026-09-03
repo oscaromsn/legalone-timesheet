@@ -998,6 +998,39 @@ export class LegalOneTimesheet {
   }
 
   /**
+   * An authenticated GET, as text.
+   *
+   * The escape hatch for surfaces this client does not model — report generation,
+   * the generated-reports list. What it returns is raw; a caller that parses it
+   * owns that parsing.
+   */
+  async getText(path: string): Promise<string> {
+    const response = await fetch(`${this.base}${path}`, { headers: await this.authHeaders() });
+    const html = await response.text();
+    assertSession(response, `GET ${path}`, html);
+    if (!response.ok) throw new Error(`GET ${path} failed: ${response.status}`);
+    return html;
+  }
+
+  /**
+   * An authenticated GET, as bytes, with whatever name the server gave the file.
+   *
+   * Only the URL is checked for an expired session here: reading the body to look
+   * for a login page would consume the very bytes being fetched, and an expired
+   * session is a redirect long before it is a payload.
+   */
+  async getFile(path: string): Promise<{ bytes: Uint8Array; filename: string }> {
+    const response = await fetch(`${this.base}${path}`, { headers: await this.authHeaders() });
+    assertSession(response, `download ${path}`);
+    if (!response.ok) throw new Error(`download ${path} failed: ${response.status}`);
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const raw = disposition.match(/filename\*?="?([^";]+)/)?.[1] ?? 'download';
+    let filename = raw;
+    try { filename = decodeURIComponent(raw); } catch { /* keep the raw name */ }
+    return { bytes: new Uint8Array(await response.arrayBuffer()), filename };
+  }
+
+  /**
    * Resolves a lookup to its rows. `path` is the widget's `contentUrl`, e.g.
    * `/contatos/Contatos/LookupGridContato`; `term` filters server-side.
    *

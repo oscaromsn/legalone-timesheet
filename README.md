@@ -37,6 +37,8 @@ src/interview.ts    policy   — 273 form fields → the ~5 a lawyer must answer
 src/doctor.ts       setup    — checks this client's assumptions against a tenant.
 src/setup.ts        setup    — reads a firm's own records to propose its config.
 src/template.ts     setup    — proposes a create template from the tenant's form.
+src/export.ts       data     — pulls the timesheet out as an analysable table.
+src/xlsx.ts         mechanism — just enough of the xlsx format to read a report.
 src/aliases.json    config   — name drift and firm constants.
 src/template.json   config   — invariant create fields, per tenant.
 verify.ts           gate     — regenerates captured payloads and diffs them.
@@ -337,6 +339,35 @@ Known parser hazards, all previously silent:
 - Some `*Hidden` companions are populated by JS at submit time, not rendered.
 
 ---
+
+## Getting the data out
+
+`exportTimesheet(client)` in `src/export.ts` asks Legal One for a real `.xlsx` of
+every timesheet entry and returns it parsed — one record per entry, thirteen
+columns, durations as day fractions (`0.125` is three hours). Measured end to end at
+about twenty seconds.
+
+```ts
+const { records, bytes, totalBeforeFilter } = await exportTimesheet(client, {
+  from: '01/07/2026', to: '31/07/2026',
+});
+```
+
+Three things worth knowing before building on it.
+
+**It is not a form round-trip.** Everywhere else here, writing means read the form,
+change fields, post it back. That fails on this endpoint: the browser sends about
+twenty parameters and it rejects the eighty a form read produces — silently, by
+queueing a job that never produces a file.
+
+**The server ignores the date filters,** so the range is applied after parsing.
+Asking Legal One for one month returns every entry there is; `totalBeforeFilter`
+says how many came back before the local filter.
+
+**The export is scoped to the signed-in user.** The report models carry an
+executante filter and the lookup does find other people, but the rows come back as
+your own regardless — confirmed by driving the real UI and capturing what it sends.
+Firm-wide figures need a different permission, not different code.
 
 ## Limits
 

@@ -182,7 +182,8 @@ export async function discover(
 
   const findings = [
     finding('contatoEscritorioId', 'Firm contact (where internal time is booked)', contatoEscritorio),
-    finding('escritorioId', 'Escritório', escritorioOrigem),
+    finding('escritorioOrigemId', 'Escritório de origem', escritorioOrigem),
+    finding('escritorioResponsavelId', 'Escritório responsável', escritorioResponsavel),
     finding('responsavelId', 'Responsável', responsavel),
     finding('responsavelPosicaoId', 'Posição do responsável', posicao),
     finding('naturezaId', 'Natureza', natureza),
@@ -193,16 +194,16 @@ export async function discover(
   ];
 
   /*
-   * `interview.ts` collapses origem and responsável into one `escritorioId`. That
-   * holds on a firm where they agree, and quietly books against the wrong one where
-   * they do not — so it is checked rather than assumed.
+   * These were one field until this tenant showed they are two. Origem sat at a
+   * practice-area node while responsável sat at the firm root, and a single
+   * `escritorioId` had been writing the area node into both.
    */
   const origem = escritorioOrigem.candidates()[0]?.value;
   const respEscritorio = escritorioResponsavel.candidates()[0]?.value;
   if (origem && respEscritorio && origem !== respEscritorio) {
     warnings.push(
-      `EscritorioOrigem (${origem}) and EscritorioResponsavel (${respEscritorio}) differ on this tenant, ` +
-        'but aliases.json has one escritorioId for both. Decide which one this firm books against.',
+      `Escritório de origem (${origem}) and escritório responsável (${respEscritorio}) are different here. ` +
+        'That is normal and now configurable separately — check both before adopting.',
     );
   }
 

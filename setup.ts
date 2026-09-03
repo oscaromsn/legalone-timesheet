@@ -24,21 +24,70 @@ const EXAMPLE = new URL('src/aliases.example.json', import.meta.url);
 const write = process.argv.includes('--write');
 const say = (s = '') => console.log(s);
 
-const bestOf = (d: Discovery, key: string): { value: string; text: string } | null => {
-  const found = d.findings.find((f) => f.key === key)?.best;
-  return found ? { value: found.value, text: found.text } : null;
+const findingFor = (d: Discovery, key: string) => d.findings.find((f) => f.key === key);
+
+/** A value that is still a placeholder is not a value. */
+const usable = (v: string | undefined): boolean => !!v && !/^<.*>$/.test(v);
+
+/**
+ * Whether the firm's own records actually settle a value.
+ *
+ * They often do not, and the reason is worth understanding rather than averaging
+ * away. `discover` samples the matters *this user books time to*, which is an
+ * excellent frame for finding their executante or their área — those are attributes
+ * of the user, and they came back unanimous. It is a biased frame for the firm's
+ * default responsável: you are disproportionately the responsável on your own
+ * matters, while the config answers a different question — who goes on a matter the
+ * firm files next. That is policy, not a statistic over one person's work.
+ *
+ * So a mode is a proposal, never a decision. Anything contested keeps whatever is
+ * already configured and is reported as pending.
+ */
+const settled = (d: Discovery, key: string): { value: string; text: string } | null => {
+  const finding = findingFor(d, key);
+  if (!finding?.best) return null;
+  if (finding.candidates.length > 1) return null;  // the records disagree
+  if (finding.sampled < 2) return null;            // a sample of one is not evidence
+  return { value: finding.best.value, text: finding.best.text };
 };
+
+const contestedWhy = (d: Discovery, key: string): string => {
+  const finding = findingFor(d, key);
+  if (!finding?.best) return 'nothing found in the sampled records';
+  if (finding.candidates.length > 1) {
+    return `the records disagree: ${finding.candidates.map((c) => `${c.value}${c.text ? ` (${c.text.slice(0, 32)})` : ''} ×${c.count}`).join(', ')}`;
+  }
+  return 'only one record carried it, so this is a sample of one';
+};
+
+export type Adoption =
+  | { key: string; verdict: 'adopted'; value: string; why: string }
+  | { key: string; verdict: 'by hand'; value: string; why: string }
+  | { key: string; verdict: 'kept'; value: string; why: string }
+  | { key: string; verdict: 'unresolved'; why: string };
+
+/** `--set key=value` settles a field the records could not. */
+const overrides = (): Record<string, string> =>
+  Object.fromEntries(
+    process.argv
+      .filter((a) => a.startsWith('--set='))
+      .map((a) => a.slice('--set='.length).split('='))
+      .filter((pair): pair is [string, string] => pair.length === 2 && !!pair[0] && !!pair[1]),
+  );
 
 /**
  * Folds discovered values into the config, preserving everything that is not
- * derivable.
+ * derivable — and everything the records could not settle.
  *
  * `aliases` is the reason this reads before it writes. A firm's alias table is
- * billing-relevant and cannot be inferred — overwriting one would silently redirect
+ * billing-relevant and cannot be inferred; overwriting one would silently redirect
  * hours. Same for `internal.prefixes` and `titleFormat`: conventions a person chose.
- * Only `defaults` is replaced.
  */
-function mergeAliases(discovery: Discovery): { merged: Record<string, unknown>; kept: string[] } {
+function mergeAliases(discovery: Discovery): {
+  merged: Record<string, unknown>;
+  kept: string[];
+  adoptions: Adoption[];
+} {
   const base = JSON.parse(readFileSync(existsSync(ALIASES) ? ALIASES : EXAMPLE, 'utf8')) as Record<string, unknown>;
   const kept: string[] = [];
   const aliases = (base['aliases'] ?? {}) as Record<string, string>;
@@ -46,19 +95,40 @@ function mergeAliases(discovery: Discovery): { merged: Record<string, unknown>; 
   if (base['titleFormat']) kept.push('titleFormat');
 
   const defaults = { ...(base['defaults'] as Record<string, string>) };
-  const put = (idKey: string, textKey: string, discovered: string) => {
-    const hit = bestOf(discovery, discovered);
-    if (!hit) return;
-    defaults[idKey] = hit.value;
-    if (hit.text) defaults[textKey] = hit.text;
-  };
-  put('contatoEscritorioId', 'contatoEscritorioText', 'contatoEscritorioId');
-  put('escritorioId', 'escritorioText', 'escritorioId');
-  put('responsavelId', 'responsavelText', 'responsavelId');
-  put('responsavelPosicaoId', 'responsavelPosicaoText', 'responsavelPosicaoId');
-  put('naturezaId', 'naturezaText', 'naturezaId');
+  const chosen = overrides();
+  const adoptions: Adoption[] = [];
 
-  return { merged: { ...base, defaults }, kept };
+  const put = (idKey: string, textKey: string) => {
+    if (chosen[idKey]) {
+      defaults[idKey] = chosen[idKey]!;
+      const match = findingFor(discovery, idKey)?.candidates.find((c) => c.value === chosen[idKey]);
+      if (match?.text) defaults[textKey] = match.text;
+      adoptions.push({ key: idKey, verdict: 'by hand', value: chosen[idKey]!, why: '--set on the command line' });
+      return;
+    }
+    const agreed = settled(discovery, idKey);
+    if (agreed) {
+      defaults[idKey] = agreed.value;
+      if (agreed.text) defaults[textKey] = agreed.text;
+      adoptions.push({ key: idKey, verdict: 'adopted', value: agreed.value, why: 'the records agree' });
+      return;
+    }
+    const why = contestedWhy(discovery, idKey);
+    if (usable(defaults[idKey])) {
+      adoptions.push({ key: idKey, verdict: 'kept', value: defaults[idKey]!, why });
+    } else {
+      adoptions.push({ key: idKey, verdict: 'unresolved', why });
+    }
+  };
+
+  put('contatoEscritorioId', 'contatoEscritorioText');
+  put('escritorioOrigemId', 'escritorioOrigemText');
+  put('escritorioResponsavelId', 'escritorioResponsavelText');
+  put('responsavelId', 'responsavelText');
+  put('responsavelPosicaoId', 'responsavelPosicaoText');
+  put('naturezaId', 'naturezaText');
+
+  return { merged: { ...base, defaults }, kept, adoptions };
 }
 
 /**
@@ -143,25 +213,48 @@ async function main(): Promise<number> {
   say(formatTemplate(candidate));
   say();
 
-  const contato = bestOf(discovery, 'contatoEscritorioId');
-  if (!contato) {
-    say('No firm contact could be found, so internal time has nowhere to book and the probe cannot run.');
-    return 1;
+  const { merged, kept, adoptions } = mergeAliases(discovery);
+  const defaults = merged['defaults'] as Record<string, string>;
+  const unresolved = adoptions.filter((a) => a.verdict === 'unresolved');
+  const held = adoptions.filter((a) => a.verdict === 'kept');
+
+  say('— what would be written —');
+  for (const a of adoptions) {
+    const shown = a.verdict === 'unresolved' ? '(none)' : a.value;
+    say(`  ${a.verdict.padEnd(11)} ${a.key.padEnd(24)} ${shown.padEnd(8)} ${a.why}`);
   }
+  if (held.length > 0 || unresolved.length > 0) {
+    say();
+    say('The firm\'s records do not settle every value, and a mode is not a decision.');
+    say('Settle one with, for example:  bun run setup --write --set=responsavelId=38');
+  }
+  say();
 
   if (!write) {
     say('Nothing was written. Re-run with --write to commit this and prove it with a probe entry.');
     return 0;
   }
 
-  const { merged, kept } = mergeAliases(discovery);
+  if (unresolved.length > 0) {
+    say(`Refusing to write: ${unresolved.map((a) => a.key).join(', ')} could not be settled and have no usable`);
+    say('existing value. Writing a half-configured file would fail later, further from the cause.');
+    return 1;
+  }
+
   writeFileSync(ALIASES, `${JSON.stringify(merged, null, 2)}\n`);
   say(`wrote src/aliases.json${kept.length > 0 ? ` (kept ${kept.join(', ')})` : ''}`);
   say('  aliases were not touched: a wrong one books hours against the wrong client, and nothing surfaces it.');
+  if (held.length > 0) {
+    say(`  ${held.length} value(s) left as they were, because the records contest them: ${held.map((a) => a.key).join(', ')}`);
+  }
 
   say();
   say('— proving it —');
-  await selfTest(client, { kind: 'contato', id: Number(contato.value), text: contato.text });
+  await selfTest(client, {
+    kind: 'contato',
+    id: Number(defaults['contatoEscritorioId']),
+    text: defaults['contatoEscritorioText'] ?? '',
+  });
 
   say();
   say('Done. Run again to re-check, or run the gates:');

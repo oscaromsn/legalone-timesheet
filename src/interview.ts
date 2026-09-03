@@ -142,10 +142,18 @@ export async function proposeMatter(
     'Responsavel.PosicaoEnvolvidoText': defaults.responsavelPosicaoText,
     NaturezaId: defaults.naturezaId,
     NaturezaText: defaults.naturezaText,
-    EscritorioOrigemId: defaults.escritorioId,
-    EscritorioOrigemText: defaults.escritorioText,
-    EscritorioResponsavelId: defaults.escritorioId,
-    EscritorioResponsavelText: defaults.escritorioText,
+    /*
+     * Two fields, not one value twice. A tenant can and does file matters whose
+     * origem and responsável escritórios differ — measured here as origem at a
+     * practice-area node and responsável at the firm root — and collapsing them
+     * wrote the wrong escritório responsável on every matter this ever created.
+     * Nothing surfaced it: createMatter verifies that one matter now matches the
+     * number, never what is inside it.
+     */
+    EscritorioOrigemId: defaults.escritorioOrigemId,
+    EscritorioOrigemText: defaults.escritorioOrigemText,
+    EscritorioResponsavelId: defaults.escritorioResponsavelId,
+    EscritorioResponsavelText: defaults.escritorioResponsavelText,
     LawsuitAmountType: '1',
     CostsType: '0',
   };

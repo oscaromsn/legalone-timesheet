@@ -62,11 +62,23 @@ export type Link = z.input<typeof LinkSchema>;
  *
  * Read from `aliases.json` rather than hardcoded: the id is tenant-specific, and
  * that file is the one place firm identity lives.
+ *
+ * A function, not a constant, because the value can be wrong in a way a constant
+ * cannot report. An unfilled `<firm-contact-id>` placeholder becomes `Number(...)`
+ * → `NaN`, which is a perfectly good object until a link is parsed several calls
+ * later and Zod complains about a number — naming neither the file nor the field
+ * nor the fact that setup was never run. Resolve it where it is used, and say so.
  */
-export const CONTATO_ESCRITORIO: Link = {
-  kind: 'contato',
-  id: Number(firm.defaults.contatoEscritorioId),
-  text: firm.defaults.contatoEscritorioText,
+export const contatoEscritorio = (): Link => {
+  const raw = firm.defaults.contatoEscritorioId;
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error(
+      `aliases.json: defaults.contatoEscritorioId is ${JSON.stringify(raw)}, which is not a record id. ` +
+        'Copy src/aliases.example.json to src/aliases.json and fill it in — see the README.',
+    );
+  }
+  return { kind: 'contato', id, text: firm.defaults.contatoEscritorioText };
 };
 
 /** Builds the link for a matter returned by `resolveProcesso`/`searchProcessos`. */
@@ -186,7 +198,7 @@ const buildBody = (entry: TimeEntryInput, id?: number): string => {
   if (e.observations !== undefined) setField(fields, 'Observacoes', e.observations);
   setField(fields, 'ButtonSave', '1');
   setField(fields, 'LastFieldWithFocus', 'DescricaoHT');
-  rowFields(fields, duration, e.consideredDuration ?? duration, e.link ?? LinkSchema.parse(CONTATO_ESCRITORIO));
+  rowFields(fields, duration, e.consideredDuration ?? duration, e.link ?? LinkSchema.parse(contatoEscritorio()));
 
   return new URLSearchParams(fields).toString();
 };

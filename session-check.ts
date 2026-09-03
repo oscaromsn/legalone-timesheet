@@ -12,10 +12,21 @@
  * Unlike verify.ts this needs no fixtures — it stubs fetch — so it runs anywhere.
  * Add a case here whenever a new fetch site is added to the client.
  */
-import { LegalOneTimesheet, SessionExpiredError, CONTATO_ESCRITORIO } from './src/client.ts';
+import { LegalOneTimesheet, SessionExpiredError, type Link } from './src/client.ts';
 import { planEntries } from './src/resolver.ts';
 
 const TENANT = 'https://tenant.novajus.com.br';
+
+/*
+ * A made-up link, deliberately not the firm contact from `aliases.json`.
+ *
+ * This file tests expiry detection, which has nothing to do with how a firm is
+ * configured — and coupling the two made a fresh clone fail its own documented
+ * first run: the example config's `<firm-contact-id>` placeholder parses to NaN,
+ * so three cases died on a Zod complaint about a link and reported themselves as
+ * detection failures. The gate must pass before setup has ever run.
+ */
+const LINK: Link = { kind: 'contato', id: 1, text: 'Example firm' };
 const LOGIN_HTML = `<!doctype html><html><body><form action="/Account/Login" method="post">
   <input name="UserName" type="text" /><input name="Password" type="password" />
   <input type="submit" value="Entrar" /></form></body></html>`;
@@ -76,7 +87,7 @@ for (const shape of ['followed', 'bodyOnly', 'federated'] as const) {
   await expectExpired('readMatter', shape, (c) => c.readMatter(1));
   await expectExpired('create', shape, (c) => c.create({
     date: '01/09/2026', startTime: '09:00:00', endTime: '10:00:00',
-    description: 'Acme — reunião', link: CONTATO_ESCRITORIO,
+    description: 'Acme — reunião', link: LINK,
   }));
   await expectExpired('update', shape, (c) => c.update(1, { description: 'x' }));
   await expectExpired('createMatter', shape, (c) => c.createMatter({ EscritorioOrigemId: '9' }));

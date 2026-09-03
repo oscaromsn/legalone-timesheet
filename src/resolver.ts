@@ -1,5 +1,5 @@
 import {
-  CONTATO_ESCRITORIO,
+  contatoEscritorio,
   linkTo,
   type Contato,
   type Link,
@@ -63,7 +63,7 @@ export async function resolveTarget(
   client: LegalOneTimesheet,
   description: string,
 ): Promise<Resolution> {
-  if (isInternal(description)) return { kind: 'internal', link: CONTATO_ESCRITORIO };
+  if (isInternal(description)) return { kind: 'internal', link: contatoEscritorio() };
 
   const cnj = description.match(CNJ_PATTERN)?.[0] ?? null;
   const rawName = clientNameOf(description);

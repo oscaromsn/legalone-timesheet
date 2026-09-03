@@ -99,7 +99,7 @@ export const titleFor = (cnj: string, shortName: string, description: string): s
     SHORTNAME: shortName.toUpperCase(),
     DESCRIPTION: description.toUpperCase(),
   };
-  return format.replace(/\{(\w+)\}/g, (whole, key: string) => values[key] ?? whole);
+  return format.replace(/\{(\w+)\}/g, (whole: string, key: string) => values[key] ?? whole);
 };
 
 export interface Choice {

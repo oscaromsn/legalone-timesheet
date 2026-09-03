@@ -4,7 +4,8 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "setup": "bun setup.ts"
   },
   "dependencies": {
     "zod": "^4.4.3"

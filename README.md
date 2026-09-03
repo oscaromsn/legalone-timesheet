@@ -26,6 +26,7 @@ is, and it is the thing to preserve if you change anything here.
 ## Layers
 
 ```
+setup.ts            command  — sign in, check the tenant, configure, prove it.
 src/client.ts       mechanism — the HTTP surface. No policy, no auth decisions.
 src/cdp.ts          mechanism — a dependency-free DevTools Protocol client.
 src/session.ts      policy   — where a credential comes from, and when to ask a human.
@@ -33,6 +34,7 @@ src/auth.ts         policy   — what to do when a session expires mid-operation
 src/resolver.ts     policy   — what a timesheet line should be booked against.
 src/execute.ts      policy   — running a plan without booking an hour twice.
 src/interview.ts    policy   — 273 form fields → the ~5 a lawyer must answer.
+src/doctor.ts       setup    — checks this client's assumptions against a tenant.
 src/setup.ts        setup    — reads a firm's own records to propose its config.
 src/template.ts     setup    — proposes a create template from the tenant's form.
 src/aliases.json    config   — name drift and firm constants.
@@ -57,19 +59,37 @@ either; the commands below say `bun`, and `node` does the same thing.
 ```bash
 cd legalone-timesheet
 bun install
-cp src/aliases.example.json  src/aliases.json    # then fill in — see below
-cp src/template.example.json src/template.json   # then fill in — see below
+cp src/aliases.example.json  src/aliases.json    # placeholders, so the code can load
+cp src/template.example.json src/template.json
 bun run typecheck        # must be clean
+bun run setup            # signs in, checks the tenant, proposes a configuration
 ```
 
-Both copied files are gitignored. They carry firm and client identity, so they are
-configuration you fill in, never something this repo ships filled — and you do not
-have to fill them by hand: once you can sign in, `discover()` reads the right values
-off your own records. See *Configure for your firm*.
+The two copies are seeding, not configuration: `client.ts` imports both files
+statically, so they have to exist before anything runs. They arrive full of
+`<placeholder>` values that make the client fail loudly and by name — `setup` is what
+fills them.
+
+`setup` changes nothing on its own. It opens a browser for you to sign in, runs the
+doctor, reads a configuration off records your firm has already filed, and shows you
+the evidence for every value. Adopting it is a second, explicit step:
+
+```bash
+bun run setup --write    # commits the configuration, then proves it
+```
+
+`--write` files one probe entry, reads it back field by field and deletes it. On a
+tenant with no captured fixture that probe is the only gate there is, and entries —
+unlike matters — can be deleted, which is why it is an entry.
+
+The two config files are gitignored: they carry firm and client identity, so they are
+never something this repo ships filled. `setup` never overwrites the parts it cannot
+derive — your alias table, your internal prefixes, your title convention — because a
+wrong alias books hours against the wrong client and nothing surfaces it.
 
 ```bash
 bun run session-check.ts  # no fixtures needed — must print "36 passed"
-bun run execute-check.ts  # no fixtures needed — must print "7 passed"
+bun run execute-check.ts  # no fixtures needed — must print "8 passed"
 bun run verify.ts         # once you have captured a fixture
 ```
 
@@ -151,6 +171,28 @@ no rate block until a link is chosen — so it names them and points you at
 
 `aliases` are never discovered. A wrong alias books hours against the wrong client
 and nothing surfaces it, so that half stays empty until written by hand.
+
+### Running on another tenant
+
+Every parsing rule in this client was derived from one Legal One install, and when
+one does not hold the result is usually not an error. It is a plausible wrong answer:
+a renamed grid column yields `null` where a CNJ should be, the resolver concludes the
+matter does not exist, and offers to create one — and matters cannot be deleted.
+
+`diagnose(client)` in `src/doctor.ts` holds those assumptions up against the tenant
+in front of it. Nine checks, ordered by how silent the failure would be: that the
+grid parses at all, that the columns the parsers key on are present, that the pager
+advances, that dates are day-first and times 24-hour, that the status ids exist, that
+the form declares the lookup endpoints the interview calls, that the entry form has
+one row of each collection, and that the firm's own records agree on the ids.
+
+`setup` runs it first and refuses to configure a tenant where a check fails —
+configuring one anyway produces a setup that looks right and files hours wrong.
+
+Some of it is only observable, not provable. Date order is settled by finding a day
+above 12 in the firm's own entries; if none exists in range, the check says so rather
+than guessing. And it covers the assumptions that could be enumerated, which is not
+the same as all of them.
 
 For anything the two miss, `client.lookup(...)` and `parseLookups(html)` — see
 *Lookups* below.

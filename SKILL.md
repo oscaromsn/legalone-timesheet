@@ -117,9 +117,12 @@ those wastes the lawyer's attention, which is the point of the skill.
 `src/aliases.json` maps timesheet names to registered names — `Acme → ACME
 PARTICIPAÇÕES LTDA`. This is billing-relevant: a wrong alias books hours against the
 wrong entity and nothing surfaces the error, so it is reviewed like code. Do not
-infer aliases at runtime. The file is gitignored and copied from
-`src/aliases.example.json` at setup; if it is missing, stop and say so rather than
-guessing names.
+infer aliases at runtime.
+
+The file is gitignored and produced by `bun run setup`, which signs in, checks the
+tenant, and reads the firm's ids off its own records. If it is missing or still holds
+`<placeholder>` values, say so and point at that command — never guess an id, and
+never guess a name.
 
 ## Reporting back
 

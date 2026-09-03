@@ -12,5 +12,5 @@
     "types": ["bun"],
     "noEmit": true
   },
-  "include": ["src", "verify.ts", "session-check.ts"]
+  "include": ["src", "verify.ts", "session-check.ts", "execute-check.ts"]
 }

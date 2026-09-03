@@ -12,18 +12,34 @@ verifies itself by reading back.
 
 ## Setup
 
-`LEGALONE_COOKIE` in `.env` is a full browser session cookie, and it is the entire
-credential — there is no anti-forgery token. It expires when that browser session
-ends, and there is no automatic refresh: ask the lawyer to re-copy it from DevTools.
-
-A `SessionExpiredError` from any call means exactly that. Stop the batch and report
-it — do not retry, and do not treat any result from that run as real. An expired
-session used to read as data: the searches came back empty, so a registered client
-was reported as "not registered".
+The session comes from a browser profile the connector owns. Nothing to copy, and
+nothing for the lawyer to do once they have signed in the first time.
 
 ```ts
-const client = new LegalOneTimesheet({ cookie: process.env.LEGALONE_COOKIE! });
+const session = browserSession();
+const client = new LegalOneTimesheet({ cookie: session.cookie, baseUrl: session.tenant() ?? undefined });
 ```
+
+`.ASPXAUTH` is the entire credential for the application — there is no anti-forgery
+token — but it is a session cookie and never reaches disk. What persists is the IdP's
+session, in the profile, and a fresh `.ASPXAUTH` is minted from it in about four
+seconds with no interaction.
+
+Two errors, and they mean opposite things:
+
+**`SessionExpiredError`** is recoverable and usually already recovered. Wrap work in
+the helpers from `auth.ts` and it renews once and carries on. If one still reaches
+you, the renewal did not help — stop, and do not treat any result from that run as
+real. An expired session used to read as data: the searches came back empty, so a
+registered client was reported as "not registered".
+
+**`LoginRequiredError`** needs the person. A browser window is already open at the
+sign-in page. Say so plainly, ask them to sign in, and stop — do not retry, and do
+not wait. Once they confirm, run again.
+
+Never retry a write on your own. `create` and `createMatter` prove nothing about
+whether they landed, and a matter cannot be deleted. `executePlan` already handles
+this correctly; outside it, ask whether the work is there before doing it again.
 
 ## The workflow
 

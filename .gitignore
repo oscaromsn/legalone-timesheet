@@ -23,4 +23,9 @@ fixtures/*
 !fixtures/README.md
 scripts/
 
+# The browser profile lives in an OS application directory, not here — but if one
+# is ever pointed at the repo, it holds a renewable SSO session. Never commit it.
+browser/
+chrome-profile/
+
 .DS_Store

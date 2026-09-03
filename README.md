@@ -26,13 +26,21 @@ is, and it is the thing to preserve if you change anything here.
 ## Layers
 
 ```
-src/client.ts      mechanism — 20 methods over the HTTP surface. No policy.
-src/resolver.ts    policy   — what a timesheet line should be booked against.
-src/interview.ts   policy   — 273 form fields → the ~5 a lawyer must answer.
-src/aliases.json   config   — name drift and firm constants.
-src/template.json  data     — invariant create fields, captured from a real request.
-verify.ts          test     — regenerates two captured payloads and diffs them.
-SKILL.md           the agent-facing contract.
+src/client.ts       mechanism — the HTTP surface. No policy, no auth decisions.
+src/cdp.ts          mechanism — a dependency-free DevTools Protocol client.
+src/session.ts      policy   — where a credential comes from, and when to ask a human.
+src/auth.ts         policy   — what to do when a session expires mid-operation.
+src/resolver.ts     policy   — what a timesheet line should be booked against.
+src/execute.ts      policy   — running a plan without booking an hour twice.
+src/interview.ts    policy   — 273 form fields → the ~5 a lawyer must answer.
+src/setup.ts        setup    — reads a firm's own records to propose its config.
+src/template.ts     setup    — proposes a create template from the tenant's form.
+src/aliases.json    config   — name drift and firm constants.
+src/template.json   config   — invariant create fields, per tenant.
+verify.ts           gate     — regenerates captured payloads and diffs them.
+session-check.ts    gate     — expiry detection and renewal, offline.
+execute-check.ts    gate     — never book the same hour twice, offline.
+SKILL.md            the agent-facing contract.
 ```
 
 The split matters: `client` knows *how* to talk to Legal One, `resolver` knows
@@ -43,7 +51,8 @@ resolver, not the client.
 
 ## Install
 
-Requires [Bun](https://bun.sh).
+Runs on [Bun](https://bun.sh) or Node. Both gates and the whole client work under
+either; the commands below say `bun`, and `node` does the same thing.
 
 ```bash
 cd legalone-timesheet
@@ -54,7 +63,9 @@ bun run typecheck        # must be clean
 ```
 
 Both copied files are gitignored. They carry firm and client identity, so they are
-configuration you fill in, never something this repo ships filled.
+configuration you fill in, never something this repo ships filled — and you do not
+have to fill them by hand: once you can sign in, `discover()` reads the right values
+off your own records. See *Configure for your firm*.
 
 ```bash
 bun run session-check.ts  # no fixtures needed — must print "36 passed"
@@ -70,32 +81,43 @@ for how to capture one.
 
 ### Credentials
 
-Auth is a browser session cookie. There is no anti-forgery token, so **that cookie is
-the entire credential** — full authority over the account, not scoped to timesheets.
-
-Create `.env`:
-
-```
-LEGALONE_BASE_URL=https://<your-tenant>.novajus.com.br
-LEGALONE_COOKIE="cookie_login_method=…; .ASPXAUTH=…; …"
+```ts
+const session = browserSession();
+const client = new LegalOneTimesheet({ cookie: session.cookie, baseUrl: session.tenant()! });
 ```
 
-Get it from DevTools → Network → any request to your tenant → copy the whole
-`Cookie` request header.
+Legal One authenticates through Thomson Reuters OnePass, which federates to an
+external identity provider over OIDC. The login form carries an anti-forgery token
+and captcha flags, and your firm may require a second factor — so this drives a real
+browser rather than replaying credentials, and you sign in the way you already do.
+
+The first run opens a window. After that it is silent: `.ASPXAUTH`, which is the
+entire credential for the application, is a session cookie that dies with the browser
+process and never reaches disk. The identity provider's session does persist, in a
+profile directory this tool owns, and a fresh `.ASPXAUTH` is minted from it in about
+four seconds across thirteen redirects with no interaction — headless, so you see
+nothing. Once the IdP's own window closes (24 hours on the tenant this was built
+against), you sign in again.
+
+**The profile is the credential now, and it is a bigger one than the dotfile was.**
+A `.env` held a cookie that died when you closed your browser. The profile holds a
+renewable single sign-on session for your Thomson Reuters account, it survives
+reboots, and it is not scoped to timesheets. Treat the directory as a secret:
 
 ```bash
-chmod 600 .env
-echo .env >> .gitignore
+# macOS; ~/.local/share/legalone-timesheet/browser on Linux,
+# %LOCALAPPDATA%\legalone-timesheet\browser on Windows
+chmod 700 ~/Library/Application\ Support/legalone-timesheet/browser
 ```
 
-It expires when that browser session ends. Every call detects that and raises
-`SessionExpiredError` naming the request that hit it, so an expired cookie stops the
-run instead of being read as data — refresh it and run again. For anything beyond
-experimentation, move it to the keychain (`security add-generic-password`) and read
-it at runtime instead of keeping a dotfile.
+Deleting that directory revokes everything and costs one sign-in.
 
-There is no automatic acquisition or refresh. Obtaining the cookie is the manual
-DevTools step above, both on first use and after it expires.
+`ClientOptions.cookie` still takes a plain string, which is the way to run this
+somewhere without a browser — CI, a container, a server. Put the `Cookie` header from
+DevTools in `LEGALONE_COOKIE`, `chmod 600 .env`, and expect it to expire when that
+browser session does. Every call detects expiry and raises `SessionExpiredError`
+naming the request that hit it, so a dead cookie stops the run instead of being read
+as data.
 
 ### Configure for your firm
 
@@ -109,7 +131,29 @@ DevTools step above, both on first use and after it expires.
 - **`defaults`** — firm constants (escritório, responsável, natureza). Never asked in
   the interview because they are the same on every matter this practice files.
 
-Find your own ids with `client.lookup(...)` — see *Lookups* below.
+You do not have to find these by hand. `discover(client)` in `src/setup.ts` reads
+them off records your firm has already filed — your timesheet entries name the
+matters you actually book to, and those matters carry the escritório, responsável,
+natureza and posição. It writes nothing: it proposes, shows how many records agreed,
+and lists what else it saw.
+
+That last part is the point. Run against a real tenant with a small sample, seven of
+nine values came out exactly right and the two that did not were both reported as
+disagreements with the correct answer among the alternatives — the mode had elected
+the running user as responsável, because he is responsável on his own matters, while
+the firm default is someone else. Read the evidence before adopting any of it.
+
+`generateTemplate(client, installed)` in `src/template.ts` does the same for
+`template.json`, and is equally explicit about its limits: three fields are written
+by JavaScript at submit time and appear in no html, and a blank create form carries
+no rate block until a link is chosen — so it names them and points you at
+`discover()`, which reads those off entries that already have one.
+
+`aliases` are never discovered. A wrong alias books hours against the wrong client
+and nothing surfaces it, so that half stays empty until written by hand.
+
+For anything the two miss, `client.lookup(...)` and `parseLookups(html)` — see
+*Lookups* below.
 
 ---
 

@@ -76,7 +76,10 @@ for (const { file, params: real, link } of cases) {
     return new Response('<a href="/TimeSheet/HorasTrabalhadas/Details/1">ok</a>', { status: 200 });
   }) as typeof fetch;
 
-  await new LegalOneTimesheet({ cookie: 'x' }).create({
+  // fetch is stubbed, so the tenant is never contacted — but `create` still builds
+  // a URL from it. Passing one keeps this runnable on a fresh clone with no .env,
+  // and under Node, which does not auto-load one the way Bun does.
+  await new LegalOneTimesheet({ cookie: 'x', baseUrl: 'https://verify.invalid' }).create({
     date: real.get('DtInicio')!, startTime: real.get('HrInicio')!, endTime: real.get('HrTermino')!,
     description: real.get('DescricaoHT')!, link,
   });

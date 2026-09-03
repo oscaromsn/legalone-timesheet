@@ -1,5 +1,5 @@
 import type { Contato, LegalOneTimesheet } from './client.ts';
-import config from './aliases.json';
+import config from './aliases.json' with { type: 'json' };
 
 /**
  * Turns a `matter-missing` resolution into the smallest set of questions a lawyer

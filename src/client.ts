@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import firm from './aliases.json';
-import template from './template.json';
+import firm from './aliases.json' with { type: 'json' };
+import template from './template.json' with { type: 'json' };
 
 /**
  * Legal One (NovaJus) timesheet client.
@@ -534,7 +534,16 @@ export interface ClientOptions {
 }
 
 export class LegalOneTimesheet {
-  constructor(private readonly options: ClientOptions) {}
+  /*
+   * Written as an explicit field rather than a constructor parameter property:
+   * a parameter property is the one piece of TypeScript here that erasing types
+   * cannot handle, so it is what stops Node from running these files directly.
+   */
+  private readonly options: ClientOptions;
+
+  constructor(options: ClientOptions) {
+    this.options = options;
+  }
 
   private get base(): string {
     const base = this.options.baseUrl ?? BASE;

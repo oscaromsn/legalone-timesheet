@@ -6,7 +6,7 @@ import {
   type LegalOneTimesheet,
   type Processo,
 } from './client.ts';
-import config from './aliases.json';
+import config from './aliases.json' with { type: 'json' };
 
 /**
  * Decides what a timesheet line should be booked against.

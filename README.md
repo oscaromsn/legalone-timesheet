@@ -26,6 +26,7 @@ is, and it is the thing to preserve if you change anything here.
 ## Layers
 
 ```
+seed.mjs            install  — puts the two config files in place, once, if missing.
 setup.ts            command  — sign in, check the tenant, configure, prove it.
 mcp.ts              command  — the MCP server, over stdio.
 src/mcp/            surface  — eighteen tools wrapping the library. No new rules.
@@ -63,17 +64,19 @@ either; the commands below say `bun`, and `node` does the same thing.
 
 ```bash
 cd legalone-timesheet
-bun install
-cp src/aliases.example.json  src/aliases.json    # placeholders, so the code can load
-cp src/template.example.json src/template.json
+bun install              # also seeds the two config files, if they aren't there
 bun run typecheck        # must be clean
 bun run setup            # signs in, checks the tenant, proposes a configuration
 ```
 
-The two copies are seeding, not configuration: `client.ts` imports both files
-statically, so they have to exist before anything runs. They arrive full of
-`<placeholder>` values that make the client fail loudly and by name — `setup` is what
-fills them.
+Installing runs `seed.mjs`, which copies `src/aliases.example.json` and
+`src/template.example.json` into place if they are missing. That is seeding, not
+configuration: `client.ts` imports both files statically, so they have to exist
+before anything runs — a clone without them does not typecheck, and says so as four
+`TS2307`s naming a file the reader has never heard of. They arrive full of
+`<placeholder>` values that make the client fail loudly and by name, and `setup` is
+what fills them. Seeding never overwrites: the files it would clobber hold a firm's
+real client names, ids and billing rate.
 
 `setup` changes nothing on its own. It opens a browser for you to sign in, runs the
 doctor, reads a configuration off records your firm has already filed, and shows you
@@ -137,6 +140,16 @@ chmod 700 ~/Library/Application\ Support/legalone-timesheet/browser
 ```
 
 Deleting that directory revokes everything and costs one sign-in.
+`LEGALONE_PROFILE_DIR` moves it, which is also the only sane way to exercise a cold
+start: the alternative is moving `HOME`, and that moves the macOS keychain with it,
+so Chrome cannot reach its own safe storage and raises a modal that blocks the
+window. Measurements taken that way are of the modal.
+
+If a launch fails with *"browser started but wrote nothing into …"*, the browser is
+running but cannot write the profile directory it was handed. On a developer machine
+that is a sandbox — this reproduces under agent sandboxes and under corporate
+endpoint policy. Point `LEGALONE_PROFILE_DIR` somewhere writable, or run outside the
+sandbox. It is not a Legal One problem and no amount of retrying fixes it.
 
 `ClientOptions.cookie` still takes a plain string, which is the way to run this
 somewhere without a browser — CI, a container, a server. Put the `Cookie` header from

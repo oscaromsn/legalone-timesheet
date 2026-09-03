@@ -301,6 +301,32 @@ export interface TimeEntryRecord {
   columns: Record<string, string>;
 }
 
+/** One page of the contacts grid. */
+const parseContatos = (html: string): Contato[] => {
+  const headers = [...(html.match(/<thead>([\s\S]*?)<\/thead>/)?.[1] ?? '')
+    .matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => stripTags(m[1] ?? ''));
+
+  return [...html.matchAll(GRID_ROW)].flatMap((row) => {
+    const cells = [...(row[1] ?? '').matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => stripTags(m[1] ?? ''));
+    // The detail path segment varies by contact type (/contatos/empresas/...,
+    // /contatos/pessoas/...), so match the type loosely and fall back to the
+    // row checkbox, which always carries the id.
+    const markup = row[1] ?? '';
+    const id = Number(
+      markup.match(/\/contatos\/[a-z]+\/details\/(\d+)/i)?.[1] ?? markup.match(/grid_check_(\d+)/)?.[1],
+    );
+    if (!id) return [];
+    const columns: Record<string, string> = {};
+    headers.forEach((h, i) => { if (h) columns[h] = cells[i] ?? ''; });
+    return [{
+      id,
+      nome: columns['Nome / Razão social'] || columns['Nome/Razão social'] || columns['Nome'] || null,
+      documento: columns['CPF/CNPJ'] || null,
+      columns,
+    }];
+  });
+};
+
 const parseEntries = (html: string): TimeEntryRecord[] => {
   const headers = [...(html.match(/<thead>([\s\S]*?)<\/thead>/)?.[1] ?? '').matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)]
     .map((m) => stripTags(m[1] ?? ''));
@@ -1185,41 +1211,40 @@ export class LegalOneTimesheet {
    * weaker evidence than a miss on a CNJ.
    */
   async searchContatos(term: string): Promise<Contato[]> {
-    const query = new URLSearchParams({
-      IsSearchExecutedByUser: 'true',
-      ShowAdvancedFilters: 'False',
-      SwitchToNewUXApplicationToggle: 'True',
-      Search: term,
-    });
-    const response = await fetch(`${this.base}/contatos/contatos/Search?${query}`, {
-      headers: await this.authHeaders(),
-    });
-    const html = await response.text();
-    assertSession(response, `contato search "${term}"`, html);
-    if (!response.ok) throw new Error(`contato search failed: ${response.status}`);
+    /*
+     * Paginated, like the matter search — grids stop at 18 rows. Without this the
+     * nineteenth contact onward was invisible, and `missingMatter` decided between
+     * "create the matter" and "escalate" on a truncated set: one contact too many
+     * and a registered client reads as unregistered.
+     *
+     * Deduplicated by id as well, because the loop's only stop condition is an empty
+     * page. A tenant that ignores `Page` would otherwise return page one fifty times
+     * and turn a single contact into fifty, which reads as fatal ambiguity.
+     */
+    const byId = new Map<number, Contato>();
+    for (let page = 1; page <= 50; page++) {
+      const query = new URLSearchParams({
+        IsSearchExecutedByUser: 'true',
+        ShowAdvancedFilters: 'False',
+        SwitchToNewUXApplicationToggle: 'True',
+        Search: term,
+        Page: String(page),
+      });
+      const response = await fetch(`${this.base}/contatos/contatos/Search?${query}`, {
+        headers: await this.authHeaders(),
+      });
+      const html = await response.text();
+      assertSession(response, `contato search "${term}"`, html);
+      if (!response.ok) throw new Error(`contato search failed: ${response.status}`);
 
-    const headers = [...(html.match(/<thead>([\s\S]*?)<\/thead>/)?.[1] ?? '')
-      .matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => stripTags(m[1] ?? ''));
-
-    return [...html.matchAll(GRID_ROW)].flatMap((row) => {
-      const cells = [...(row[1] ?? '').matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => stripTags(m[1] ?? ''));
-      // The detail path segment varies by contact type (/contatos/empresas/...,
-      // /contatos/pessoas/...), so match the type loosely and fall back to the
-      // row checkbox, which always carries the id.
-      const markup = row[1] ?? '';
-      const id = Number(
-        markup.match(/\/contatos\/[a-z]+\/details\/(\d+)/i)?.[1] ?? markup.match(/grid_check_(\d+)/)?.[1],
-      );
-      if (!id) return [];
-      const columns: Record<string, string> = {};
-      headers.forEach((h, i) => { if (h) columns[h] = cells[i] ?? ''; });
-      return [{
-        id,
-        nome: columns['Nome / Razão social'] || columns['Nome/Razão social'] || columns['Nome'] || null,
-        documento: columns['CPF/CNPJ'] || null,
-        columns,
-      }];
-    });
+      const batch = parseContatos(html);
+      if (batch.length === 0) break;
+      const before = byId.size;
+      for (const contato of batch) byId.set(contato.id, contato);
+      // A page that adds nothing new means the pager is not advancing.
+      if (byId.size === before) break;
+    }
+    return [...byId.values()];
   }
 
   /**

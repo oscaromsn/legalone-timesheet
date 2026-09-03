@@ -20,6 +20,10 @@ const LOGIN_HTML = `<!doctype html><html><body><form action="/Account/Login" met
   <input name="UserName" type="text" /><input name="Password" type="password" />
   <input type="submit" value="Entrar" /></form></body></html>`;
 
+const SIGNON_HTML = `<!doctype html><html><head><title>Legal One Firm Signon</title></head><body>
+  <p>Atualizar as configura&#231;&#245;es do navegador para continuar</p>
+  <p>Ativar meus cookies &mdash; Fail</p><p>Ativar o JavaScript &mdash; Fail</p></body></html>`;
+
 /** The three shapes an expired session actually arrives in. */
 const shapes = {
   /** forms auth redirect, followed: 200 whose final URL carries ReturnUrl */
@@ -32,7 +36,23 @@ const shapes = {
   manual: () => new Response('', { status: 302, headers: { location: `${TENANT}/Account/Login?ReturnUrl=%2fx` } }),
   /** login page served 200 at the requested URL — only the body gives it away */
   bodyOnly: () => new Response(LOGIN_HTML, { status: 200 }),
+  /*
+   * What a federated tenant actually does, measured against a real expired
+   * session: the IdP bounce is followed to `/`, so the final URL keeps no
+   * ReturnUrl, and with JS disabled the page is a Signon shell asking the browser
+   * to enable cookies — it never renders a password input. Title only.
+   */
+  federated: () => {
+    const r = new Response(SIGNON_HTML, { status: 200 });
+    Object.defineProperty(r, 'url', { value: `${TENANT}/` });
+    return r;
+  },
 };
+
+/** AJAX endpoints do not redirect: forms auth answers 403 with IIS's own message. */
+const ajax403 = () => new Response('You do not have permission to view this directory or page.', {
+  status: 403, headers: { 'content-type': 'text/html' },
+});
 
 let pass = 0, fail = 0;
 async function expectExpired(what: string, shape: keyof typeof shapes, run: (c: LegalOneTimesheet) => Promise<unknown>) {
@@ -48,7 +68,7 @@ async function expectExpired(what: string, shape: keyof typeof shapes, run: (c: 
   }
 }
 
-for (const shape of ['followed', 'bodyOnly'] as const) {
+for (const shape of ['followed', 'bodyOnly', 'federated'] as const) {
   await expectExpired('searchContatos', shape, (c) => c.searchContatos('Acme'));
   await expectExpired('searchProcessos', shape, (c) => c.searchProcessos('Acme'));
   await expectExpired('listEntries', shape, (c) => c.listEntries('01/09/2026', '30/09/2026'));
@@ -64,6 +84,17 @@ for (const shape of ['followed', 'bodyOnly'] as const) {
     date: '01/09/2026', startTime: '09:00:00', endTime: '10:00:00', description: 'Acme — reunião',
   }]));
 }
+// lookup is the only AJAX caller, and the only one that sees the 403 instead.
+globalThis.fetch = (async () => ajax403()) as typeof fetch;
+try {
+  await new LegalOneTimesheet({ cookie: 'stale', baseUrl: TENANT })
+    .lookup('/contatos/Contatos/LookupGridContato', 'Acme');
+  fail++; console.log('FAIL  lookup [ajax403] returned instead of throwing');
+} catch (e) {
+  if (e instanceof SessionExpiredError) { pass++; console.log('ok    lookup [ajax403]'); }
+  else { fail++; console.log(`FAIL  lookup [ajax403] threw ${(e as Error).name}`); }
+}
+
 // exists/delete keep the 302, so they are the manual-redirect cases.
 await expectExpired('exists', 'manual', (c) => c.exists(1));
 await expectExpired('delete', 'manual', (c) => c.delete(1));

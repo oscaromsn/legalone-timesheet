@@ -353,13 +353,30 @@ export class SessionExpiredError extends Error {
  * submitted, is a form post built from the wrong form entirely.
  *
  * Two signatures, because neither alone covers every call:
- *   URL   — forms auth appends ?ReturnUrl=, and the path itself names the login.
- *           Absent on a body-only check, and empty on a synthesised Response.
- *   body  — a password input. None of the pages this client requests has one, so
- *           finding one means the response is not the page that was asked for.
+ *
+ *   URL   — the 302 target names the login and carries ?ReturnUrl=. Only visible
+ *           under `redirect: 'manual'`: following the chain swallows it, and the
+ *           tenant lands on `/` with none of it left. Empty on a synthesised
+ *           Response, so it never fires in tests that build one.
+ *   body  — what the followed case has to rely on. A password input covers a
+ *           plain forms-auth login. A federated tenant never renders one: with
+ *           JS disabled — and a fetch client has none — the IdP bounce stops at
+ *           a "Signon" shell asking the browser to enable cookies and JavaScript.
+ *           Measured against a real expired session; a title check was the only
+ *           signal that page carries.
  */
-const LOGIN_URL = /[?&]ReturnUrl=|\/log(?:in|on)(?:\b|\.)/i;
-const LOGIN_BODY = /<input[^>]*\btype="password"/i;
+const LOGIN_URL =
+  /[?&]ReturnUrl=|redirecttologinpage|\/authentication\/|\/log(?:in|on)(?:\b|\.)|\/sign(?:on|in)(?:\b|\.)/i;
+const LOGIN_BODY = /<input[^>]*\btype="password"|<title>[^<]*\bsign\s?-?on\b/i;
+
+/*
+ * AJAX endpoints never redirect. `lookup` sends X-Requested-With, so forms auth
+ * answers 403 with IIS's own English message instead of a 302 — the same request
+ * without that header redirects normally. Distinct from Legal One's own permission
+ * denial, which is Portuguese and arrives as 405 (see `permissionDenied`), so a 403
+ * carrying this text is an expired session and not a forbidden action.
+ */
+const LOGIN_403 = /You do not have permission to view this directory or page/i;
 
 /**
  * Throws if `response` (or `html`, when the body has been read) is the login page.
@@ -374,6 +391,9 @@ const assertSession = (response: Response, what: string, html?: string): void =>
     throw new SessionExpiredError(what);
   }
   if (html !== undefined && LOGIN_BODY.test(html)) throw new SessionExpiredError(what);
+  if (response.status === 403 && html !== undefined && LOGIN_403.test(html)) {
+    throw new SessionExpiredError(what);
+  }
 };
 
 const decodeEntities = (s: string): string =>

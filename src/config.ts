@@ -43,8 +43,32 @@ const DefaultsSchema = z.looseObject({
   contatoEscritorioText: z.string(),
 });
 
+/**
+ * A head bound straight to a matter, with the label it was bound under.
+ *
+ * The label is stored so the file can be read. `"Rafael Bittencourt": 1611` is a
+ * decision nobody can audit six months later; `1611 — 3ª Fase Operação Alvorada`
+ * is one a person can recognise as right or wrong at a glance, which matters
+ * because this is the table that sends hours somewhere.
+ */
+const BindingSchema = z.object({ matterId: z.number().int().positive(), label: z.string() });
+
 const FirmSchema = z.looseObject({
   aliases: z.record(z.string(), z.string()),
+  /*
+   * Heads that always belong to one matter, whatever the line says.
+   *
+   * `aliases` cannot express this and was asked to. An alias maps a head to the
+   * *name* Legal One files it under, which only helps a search; it has no way to
+   * say that every "Rafael Bittencourt" line belongs to matter 1611, filed under
+   * a different person entirely. Without somewhere to put that, the only place a
+   * decision like it could live was `decisions` on a single log_entries call —
+   * re-supplied line by line, every week, and gone as soon as the call returned.
+   *
+   * Ordered after the CNJ on purpose: a line carrying its own case number is being
+   * more specific than a standing rule about its head, and the specific signal wins.
+   */
+  matters: z.record(z.string(), BindingSchema).optional(),
   internal: z.looseObject({ prefixes: z.array(z.string()) }),
   defaults: DefaultsSchema,
   titleFormat: z.string().nullable(),

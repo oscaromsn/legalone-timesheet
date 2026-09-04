@@ -24,6 +24,8 @@ import {
   type FirmConfig,
 } from '../config.ts';
 import { discover, discoverAliases, format as formatDiscovery, templateValuesFrom } from '../setup.ts';
+import { CNJ_PATTERN } from '../resolver.ts';
+import type { Processo } from '../client.ts';
 import { context, guard, type ToolResult } from './context.ts';
 import type { Tool } from './tools-read.ts';
 
@@ -65,6 +67,7 @@ const configToken = (payload: unknown, base: string): string =>
 const proposalArgs = {
   days: z.number().int().min(1).max(730).default(120),
   aliases: z.record(z.string(), z.string()).optional(),
+  matters: z.record(z.string(), z.string()).optional(),
   overrides: z.record(z.string(), z.string()).optional(),
   templateValues: z.record(z.string(), z.string()).optional(),
   internalPrefixes: z.array(z.string()).optional(),
@@ -74,6 +77,7 @@ const proposalArgs = {
 type ProposalArgs = {
   days: number;
   aliases?: Record<string, string>;
+  matters?: Record<string, string>;
   overrides?: Record<string, string>;
   templateValues?: Record<string, string>;
   internalPrefixes?: string[];
@@ -85,6 +89,124 @@ const SETTLED_KEYS = [
   'contatoEscritorioId', 'escritorioOrigemId', 'escritorioResponsavelId',
   'responsavelId', 'responsavelPosicaoId', 'naturezaId',
 ] as const;
+
+/**
+ * Names every key a proposal will actually read, and refuses the rest.
+ *
+ * `overrides` and `templateValues` are open records, and `build` reaches into them
+ * for a fixed list of names. Anything else was dropped without a word — so a real
+ * session passed five client-to-matter decisions as `overrides`, got `ok` back with
+ * a fresh token, and had changed nothing at all. A tool that accepts a decision and
+ * discards it is worse than one that refuses it: the person believes it landed.
+ *
+ * Returns the refusal, or null when every key is one this understands.
+ */
+const unknownKeys = (args: ProposalArgs): ToolResult | null => {
+  const wrong = (
+    field: 'overrides' | 'templateValues',
+    given: Record<string, string> | undefined,
+    known: readonly string[],
+    hint: string,
+  ): ToolResult | null => {
+    const bad = Object.keys(given ?? {}).filter((k) => !known.includes(k));
+    if (bad.length === 0) return null;
+    return {
+      ok: false,
+      error: `${field} carries ${bad.length} key(s) this does not read: ${bad.join(', ')}`,
+      hint: `${field} accepts only ${known.join(', ')}. ${hint} Nothing was changed.`,
+    };
+  };
+  return (
+    wrong('overrides', args.overrides, SETTLED_KEYS,
+      'It settles the firm-wide defaults the records could not, and nothing else. To send one client\'s ' +
+      'lines to one matter, use `matters` — keyed by the name at the head of the line, valued by a matter ' +
+      'id, a CNJ or a folder number.')
+    ?? wrong('templateValues', args.templateValues, TEMPLATE_LEAVES,
+      'It fills the entry template.')
+  );
+};
+
+export interface BoundMatter { matterId: number; label: string }
+
+export interface BindingOutcome {
+  head: string;
+  given: string;
+  /** How the value was read, so the answer says what it did rather than only what it found. */
+  via: 'cnj' | 'search' | 'id';
+  matterId: number;
+  label: string;
+}
+
+/**
+ * Turns what a person can read off their screen into a matter this can link to.
+ *
+ * They will not type an internal record id: what is in front of them is a CNJ, or a
+ * folder number, or — occasionally — the id itself, and asking them to know which is
+ * asking them to know how this stores things. So all three are accepted and the
+ * answer reports which reading was used.
+ *
+ * Nothing is guessed. A value matching several matters, or none, is a refusal naming
+ * the head it came from: a binding sends every future line beginning with that name
+ * to one matter, and the failure mode is hours billed to the wrong client, which
+ * nothing downstream ever surfaces.
+ */
+async function resolveBindings(
+  client: Awaited<ReturnType<typeof context>>['client'],
+  given: Record<string, string>,
+): Promise<{ bound: Record<string, BoundMatter>; outcomes: BindingOutcome[]; failures: string[] }> {
+  const bound: Record<string, BoundMatter> = {};
+  const outcomes: BindingOutcome[] = [];
+  const failures: string[] = [];
+
+  for (const [head, raw] of Object.entries(given)) {
+    const value = raw.trim();
+    const labelOf = (p: Processo): string => p.pasta ?? p.cnj ?? String(p.id);
+
+    const cnj = value.match(CNJ_PATTERN)?.[0] ?? null;
+    if (cnj) {
+      const exact = (await client.searchProcessos(cnj)).filter((p) => p.cnj === cnj);
+      if (exact.length === 1) {
+        bound[head] = { matterId: exact[0]!.id, label: labelOf(exact[0]!) };
+        outcomes.push({ head, given: value, via: 'cnj', ...bound[head]! });
+      } else {
+        failures.push(`"${head}": ${cnj} matches ${exact.length} matters, so it names no single one`);
+      }
+      continue;
+    }
+
+    const hits = await client.searchProcessos(value);
+    if (hits.length === 1) {
+      bound[head] = { matterId: hits[0]!.id, label: labelOf(hits[0]!) };
+      outcomes.push({ head, given: value, via: 'search', ...bound[head]! });
+      continue;
+    }
+    if (hits.length > 1) {
+      failures.push(
+        `"${head}": "${value}" matches ${hits.length} matters (${hits.slice(0, 3).map(labelOf).join(', ')}…), ` +
+        'so it names no single one — give its CNJ or its record id',
+      );
+      continue;
+    }
+
+    /*
+     * Nothing found, and it is all digits: the last reading left is a record id.
+     * Read the matter rather than trusting the number, because an id that does not
+     * exist would otherwise be written into the configuration and fail at booking.
+     */
+    if (/^\d+$/.test(value)) {
+      const fields = await client.readMatter(Number(value)).catch(() => null);
+      const pasta = fields?.['Pasta'];
+      if (pasta) {
+        bound[head] = { matterId: Number(value), label: pasta };
+        outcomes.push({ head, given: value, via: 'id', ...bound[head]! });
+        continue;
+      }
+    }
+    failures.push(`"${head}": "${value}" matches no matter, as a search term or as a record id`);
+  }
+
+  return { bound, outcomes, failures };
+}
 
 interface Built {
   firm: FirmConfig;
@@ -98,6 +220,7 @@ interface Built {
 const build = (
   discovery: Awaited<ReturnType<typeof discover>>,
   args: ProposalArgs,
+  bound: Record<string, BoundMatter> = {},
 ): Built => {
   const current = firmConfig();
   // The schema is loose, so unknown keys (the `_comment` fields) carry `unknown`.
@@ -143,6 +266,9 @@ const build = (
   const firm: FirmConfig = {
     ...current,
     aliases: args.aliases ?? current.aliases,
+    // Replaced wholesale, like the alias table: both are decisions, and a merge
+    // would make removing one impossible without knowing it had ever been there.
+    ...(args.matters ? { matters: bound } : current.matters ? { matters: current.matters } : {}),
     internal: { ...current.internal, prefixes: args.internalPrefixes ?? current.internal.prefixes },
     defaults: defaults as FirmConfig['defaults'],
     titleFormat: args.titleFormat === undefined ? current.titleFormat : args.titleFormat,
@@ -154,6 +280,7 @@ const build = (
 const payloadOf = (args: ProposalArgs) => ({
   days: args.days,
   aliases: args.aliases ?? null,
+  matters: args.matters ?? null,
   overrides: args.overrides ?? null,
   templateValues: args.templateValues ?? null,
   internalPrefixes: args.internalPrefixes ?? null,
@@ -168,16 +295,40 @@ export const configTools: Tool[] = [
       'alias table that maps the names a timesheet uses to the names Legal One files them under. Writes nothing. ' +
       'Call it with no arguments first to see the evidence, then again carrying the aliases and choices a person ' +
       'approved, which returns the confirmationToken apply_config needs. Alias candidates are approved one at a ' +
-      'time, never in a block: each one rewrites every future line whose description begins with that name.',
+      'time, never in a block: each one rewrites every future line whose description begins with that name. ' +
+      '`matters` is the separate, stronger decision: it binds a head straight to one matter — give a CNJ, a ' +
+      'folder number or a record id — for the lines whose client cannot be found by searching their name. ' +
+      '`overrides` settles only the six firm-wide defaults, and any other key in it is refused rather than ' +
+      'ignored.',
     schema: proposalArgs,
     run: (args: ProposalArgs) => guard(async () => {
+      const refusal = unknownKeys(args);
+      if (refusal) return refusal;
       const { client } = await context();
       const discovery = await read(() => discover(client, { days: args.days }), () => Promise.resolve());
       const aliasScan = await read(() => discoverAliases(client, { days: args.days }), () => Promise.resolve());
-      const built = build(discovery, args);
+      const bindings = await read(() => resolveBindings(client, args.matters ?? {}), () => Promise.resolve());
+      if (bindings.failures.length > 0) {
+        return {
+          ok: false,
+          error: `${bindings.failures.length} of the matters given name no single matter`,
+          failures: bindings.failures,
+          hint:
+            'Nothing was changed. A binding sends every future line beginning with that name to one matter, so ' +
+            'it has to name exactly one. Use search_matters to find it, then give its CNJ or its record id.',
+        };
+      }
+      const built = build(discovery, args, bindings.bound);
       const complete = built.unresolved.length === 0;
       return {
         ok: true,
+        /*
+         * Echoed, and this is the point of echoing anything: five client-to-matter
+         * decisions were once passed to a field that does not read them, and the
+         * answer came back identical to the one before it with a fresh token. A
+         * person could not tell from the response that nothing had been understood.
+         */
+        matters: bindings.outcomes,
         entriesSampled: discovery.entriesSampled,
         mattersSampled: discovery.mattersSampled,
         evidence: built.evidence,
@@ -222,6 +373,8 @@ export const configTools: Tool[] = [
       'at it in Legal One. That read-back is the proof, and passing it clears the mark.',
     schema: { ...proposalArgs, confirmationToken: z.string().min(1) },
     run: (args: ProposalArgs & { confirmationToken: string }) => guard(async () => {
+      const refusal = unknownKeys(args);
+      if (refusal) return refusal;
       const { client } = await context();
       const base = configVersion();
       const expected = configToken(payloadOf(args), base);
@@ -243,7 +396,16 @@ export const configTools: Tool[] = [
        * can roll over midnight. So the proposal is derived again and compared.
        */
       const discovery = await read(() => discover(client, { days: args.days }), () => Promise.resolve());
-      const built = build(discovery, args);
+      const bindings = await read(() => resolveBindings(client, args.matters ?? {}), () => Promise.resolve());
+      if (bindings.failures.length > 0) {
+        return {
+          ok: false,
+          error: `${bindings.failures.length} of the matters given no longer name a single matter`,
+          failures: bindings.failures,
+          hint: 'Nothing was written. The tenant moved since the proposal, or the value was never unambiguous.',
+        };
+      }
+      const built = build(discovery, args, bindings.bound);
       if (built.unresolved.length > 0) {
         return {
           ok: false,
@@ -283,6 +445,7 @@ export const configTools: Tool[] = [
         reasons: state.reasons,
         provisional: true,
         aliasesWritten: Object.keys(built.firm.aliases).length,
+        mattersBound: bindings.outcomes,
         note:
           'In force now — no restart. It is marked provisional, meaning it has never been checked against Legal ' +
           'One: the next log_entries files ONE real line, reads it back field by field and stops. Show the person ' +

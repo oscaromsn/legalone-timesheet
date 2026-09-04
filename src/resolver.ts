@@ -37,6 +37,8 @@ export type Resolution =
    * clients registered for years. Naming the difference is what lets a plan run before
    * a configuration exists without any of its misses being believed.
    */
+  /* Bound by configuration rather than found by searching. */
+  | { kind: 'bound'; link: Link; head: string }
   | { kind: 'unconfigured'; reason: string; clientName: string | null }
   | { kind: 'escalate'; reason: string; clientName: string | null };
 
@@ -49,6 +51,8 @@ export type Resolution =
  */
 const aliases = (): Record<string, string> => firmConfig().aliases;
 const internalPrefixes = (): string[] => firmConfig().internal.prefixes;
+const boundMatters = (): Record<string, { matterId: number; label: string }> =>
+  firmConfig().matters ?? {};
 
 /** The client name a line is about: the segment before the first em dash or colon. */
 export const clientNameOf = (description: string): string | null => {
@@ -131,6 +135,22 @@ export async function resolveTarget(
   }
 
   if (!clientName) return { kind: 'escalate', reason: 'no CNJ and no client name in the line', clientName: null };
+
+  /*
+   * A standing decision about this head, applied without a search.
+   *
+   * Only reached when the line carries no CNJ: a case number identifies one matter
+   * and a binding identifies a head, so the more specific of the two wins. The label
+   * travels with the link, so nothing has to read the matter back to name it.
+   */
+  const bound = boundMatters()[rawName!];
+  if (bound) {
+    return {
+      kind: 'bound',
+      link: { kind: 'processo', id: bound.matterId, text: bound.label },
+      head: rawName!,
+    };
+  }
 
   const byName = await firstNonEmpty(candidateNames(rawName!), (n) => client.searchProcessos(n));
   if (byName.length === 1) {

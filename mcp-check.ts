@@ -234,5 +234,32 @@ check('every tool declares a schema object', allTools.every((t) => typeof t.sche
     /configVersion/.test(log.description));
 }
 
+{
+  /*
+   * A decision accepted and discarded is worse than one refused.
+   *
+   * A real session passed five client-to-matter choices as `overrides`, which reads
+   * six fixed firm-default keys and nothing else. Every one was dropped, the answer
+   * came back `ok` with a fresh token, and nothing in the response differed from the
+   * call before it — so the person had no way to see that their decisions had not
+   * been understood. The keys are named now, and the wrong ones stop the call.
+   */
+  const propose = allTools.find((t) => t.name === 'propose_config')!;
+  const bad = await propose.run({ days: 120, overrides: { 'Henrique Bastos': '2014' } });
+  check('a client name in overrides is refused, not swallowed',
+    bad.ok === false && /Henrique Bastos/.test(String((bad as any).error)),
+    JSON.stringify(bad).slice(0, 100));
+  check('...and the refusal names the field that does take it',
+    /matters/.test(String((bad as any).hint)) && /Nothing was changed/.test(String((bad as any).hint)));
+
+  const badTemplate = await propose.run({ days: 120, templateValues: { Executante: '935' } });
+  check('a misspelt template value is refused too',
+    badTemplate.ok === false && /Executante\b/.test(String((badTemplate as any).error)));
+
+  check('the description says what each field is for',
+    /matters/.test(propose.description) && /refused rather than\s+ignored/.test(propose.description),
+    propose.description.slice(-160));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

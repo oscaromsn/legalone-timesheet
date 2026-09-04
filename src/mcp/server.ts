@@ -58,6 +58,13 @@ export const instructionsFor = (configured: boolean): string =>
     'evidence, settle what the records do not with the person, then apply_config. Alias candidates are ' +
     'approved ONE AT A TIME — each rewrites every future line beginning with that name — and a candidate the ' +
     'proposal refused stays refused.\n\n' +
+    'THE THREE FIELDS THAT CARRY A DECISION, and they are not interchangeable. `overrides` settles the six ' +
+    'firm-wide defaults the records could not agree on, by their config key (responsavelId, naturezaId, …) — ' +
+    'any other key is refused. `aliases` maps the name at the head of a line to the name Legal One files it ' +
+    'under, so a search can find it. `matters` binds a head straight to ONE matter, by CNJ, folder number or ' +
+    'record id, for the clients a name search cannot reach; it is the strongest of the three, it applies to ' +
+    'every future line beginning with that name, and a line carrying its own CNJ still wins over it. When a ' +
+    'person says "everything for X goes to matter Y", that is `matters`, never `overrides`.\n\n' +
     'BOOKING HOURS. Always plan_entries first and show the result. linked and internal are decided; ' +
     'ambiguous, matter-missing and escalate are ANSWERS, not errors — they are the cases where a guess bills ' +
     'the wrong client and nothing ever surfaces it. Take them to the person, then pass their decisions to ' +

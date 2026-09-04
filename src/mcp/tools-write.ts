@@ -175,7 +175,7 @@ export const writeTools: Tool[] = [
       const unresolved = new Map<string, { minutes: number; lines: number; state: string; reason: string }>();
       for (const p of planned) {
         const r = p.resolution;
-        if (r.kind === 'linked' || r.kind === 'internal') continue;
+        if (r.kind === 'linked' || r.kind === 'internal' || r.kind === 'bound') continue;
         const head = clientNameOf(p.description) ?? '(no client name)';
         const reason = r.kind === 'matter-missing'
           ? `"${r.clientName}" is registered, the matter is not`
@@ -194,6 +194,8 @@ export const writeTools: Tool[] = [
           description: p.description.slice(0, 120),
           state: p.resolution.kind,
           detail: p.resolution.kind === 'linked' ? p.resolution.processo.pasta
+            : p.resolution.kind === 'bound'
+              ? `bound by configuration to ${p.resolution.link.id} — ${p.resolution.link.text}`
             : p.resolution.kind === 'ambiguous' || p.resolution.kind === 'escalate'
               || p.resolution.kind === 'unconfigured' ? p.resolution.reason
             : p.resolution.kind === 'matter-missing' ? `"${p.resolution.clientName}" is registered, the matter is not`

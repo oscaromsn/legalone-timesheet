@@ -177,7 +177,8 @@ export async function executePlan(
 
     let link: Link | null = null;
     if (decision?.kind === 'link') link = decision.link;
-    else if (entry.resolution.kind === 'linked' || entry.resolution.kind === 'internal') link = entry.resolution.link;
+    else if (entry.resolution.kind === 'linked' || entry.resolution.kind === 'internal'
+      || entry.resolution.kind === 'bound') link = entry.resolution.link;
 
     if (!link) {
       /*

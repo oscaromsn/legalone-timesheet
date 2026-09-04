@@ -229,5 +229,63 @@ const at = async (dir: string) => {
 }
 
 
+{
+  /*
+   * A head bound to a matter, which the alias table could not express.
+   *
+   * An alias maps a head to the name Legal One files it under, which only helps a
+   * search find a contact. It has no way to say that every "Rafael Bittencourt"
+   * line belongs to matter 1611 — filed under a different person entirely — and a
+   * real week of timesheet needed exactly that for six of its clients. Without it
+   * the only home for the decision was `decisions` on one log_entries call, re-typed
+   * line by line and gone when the call returned.
+   */
+  const { reloadConfig: reload } = await import('./src/config.ts');
+  const { resolveTarget } = await import('./src/resolver.ts');
+
+  const dir = scratch();
+  writeFileSync(join(dir, 'aliases.json'), JSON.stringify({
+    ...full(),
+    matters: { 'Rafael Bittencourt': { matterId: 1611, label: '3ª Fase Operação Alvorada' } },
+  }));
+  writeFileSync(join(dir, 'template.json'), JSON.stringify([['SituacaoId', '0']]));
+  process.env['LEGALONE_CONFIG_DIR'] = dir;
+  reload();
+
+  let searched = 0;
+  const client = {
+    searchProcessos: async (term: string) => {
+      searched += 1;
+      return term === '5001234-56.2025.4.03.6100'
+        ? [{ id: 77, cnj: '5001234-56.2025.4.03.6100', pasta: 'Proc - 0000077' }]
+        : [];
+    },
+    searchContatos: async () => [],
+  } as never;
+
+  const bound = await resolveTarget(client, 'Rafael Bittencourt — medidas cautelares: revisão da minuta');
+  check('a bound head links without searching',
+    bound.kind === 'bound' && (bound as any).link.id === 1611 && searched === 0,
+    `${bound.kind}, ${searched} search(es)`);
+  check('...and carries the label it was bound under, so nothing reads it back',
+    (bound as any).link?.text === '3ª Fase Operação Alvorada');
+
+  /*
+   * The order that matters: a line carrying its own case number is being more
+   * specific than a standing rule about its head, so the number wins. A real
+   * timesheet had one line of a bound client that named a different matter's CNJ.
+   */
+  const specific = await resolveTarget(
+    client,
+    'Rafael Bittencourt — medidas cautelares 5001234-56.2025.4.03.6100 (TRF3): protocolo',
+  );
+  check('a CNJ on the line beats the binding for its head',
+    specific.kind === 'linked' && (specific as any).link.id === 77,
+    `${specific.kind}, id ${(specific as any).link?.id}`);
+
+  const unbound = await resolveTarget(client, 'Alguém Sem Vínculo — alguma coisa');
+  check('a head with no binding is unaffected', unbound.kind !== 'bound');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

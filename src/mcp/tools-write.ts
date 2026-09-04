@@ -66,7 +66,9 @@ export const writeTools: Tool[] = [
     description:
       'Books timesheet lines. Re-plans internally, so pass the same lines you gave plan_entries plus decisions for ' +
       'whatever it would not decide. Never books a span already covered, moves description overflow to observations, ' +
-      'and reports held hours. Set dryRun to see the outcome without writing.',
+      'and reports held hours. Set dryRun to see the outcome without writing. Pass the configVersion that ' +
+      'plan_entries returned: this re-plans internally, so a configuration applied in between would execute a ' +
+      'different plan than the one the person approved, with both steps reporting success.',
     schema: {
       lines: z.array(lineArg).min(1),
       decisions: z.record(z.string(), z.object({

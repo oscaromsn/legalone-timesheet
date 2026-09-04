@@ -6,7 +6,8 @@
  * correctly, that a confirmation cannot be reused for different answers, and that
  * needing a person is a result rather than a failure.
  */
-import { allTools } from './src/mcp/server.ts';
+import { allTools, INSTRUCTIONS } from './src/mcp/server.ts';
+import { prompts } from './src/mcp/prompts.ts';
 import { guard, page } from './src/mcp/context.ts';
 import { LoginRequiredError } from './src/session.ts';
 
@@ -82,6 +83,60 @@ check('every tool declares a schema object', allTools.every((t) => typeof t.sche
   const exporter = allTools.find((t) => t.name === 'export_timesheet')!;
   check('the export tool promises a file rather than rows',
     /file path/i.test(exporter.description) && /never the rows/i.test(exporter.description));
+}
+
+{
+  /*
+   * The surfaces have to agree, and nothing checked that they did.
+   *
+   * SKILL.md told an agent to call `planEntries(client, entries)` while the server
+   * instructions told it to run `plan_entries` — one of those is a library call no
+   * MCP client can make, and a model holding both will sometimes hand a lawyer a
+   * TypeScript snippet. Every surface names tools, so every name they use has to be
+   * a tool that exists, and none of them may speak in function calls.
+   */
+  const names = new Set(allTools.map((t) => t.name));
+  const surfaces: Array<{ where: string; text: string }> = [
+    { where: 'instructions', text: INSTRUCTIONS },
+    ...allTools.map((t) => ({ where: `tool ${t.name}`, text: t.description })),
+    ...prompts.map((p) => ({ where: `prompt ${p.name}`, text: `${p.description}\n${p.body({})}` })),
+  ];
+
+  const unknownNames: string[] = [];
+  const libraryCalls: string[] = [];
+  for (const { where, text } of surfaces) {
+    for (const token of text.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? []) {
+      if (!names.has(token)) unknownNames.push(`${where}: ${token}`);
+    }
+    for (const call of text.match(/\b[a-zA-Z][a-zA-Z0-9]*\([a-zA-Z]/g) ?? []) {
+      libraryCalls.push(`${where}: ${call}`);
+    }
+  }
+  check('every snake_case name a surface uses is a tool that exists',
+    unknownNames.length === 0, unknownNames.join(', '));
+  check('no surface tells an agent to call a library function',
+    libraryCalls.length === 0, libraryCalls.join(', '));
+
+  check('the three procedures a person starts are registered',
+    prompts.length === 3 && prompts.every((p) => p.title.length > 0 && p.description.length > 0));
+  check('every prompt body orders the tools it depends on',
+    prompts.every((p) => /session_status|authenticate/.test(p.body({}))),
+    prompts.filter((p) => !/session_status|authenticate/.test(p.body({}))).map((p) => p.name).join(', '));
+
+  const setup = prompts.find((p) => p.name === 'configurar')!;
+  check('the setup procedure explains the browser window before authenticating',
+    /before authenticate/i.test(setup.body({})) && /only on this computer|kept only/i.test(setup.body({})));
+  check('the setup procedure refuses block approval of aliases',
+    /ONE AT A TIME/.test(setup.body({})) && /never revive one the proposal refused/i.test(setup.body({})));
+}
+
+{
+  const apply = allTools.find((t) => t.name === 'apply_config')!;
+  check('applying a configuration warns that it is unproved',
+    /provisional/i.test(apply.description) && /setup --write/.test(apply.description));
+  const log = allTools.find((t) => t.name === 'log_entries')!;
+  check('booking hours asks for the configVersion the plan was made under',
+    /configVersion/.test(log.description));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

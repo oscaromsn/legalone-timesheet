@@ -59,8 +59,18 @@ bun run setup --write
 ```
 
 That saves the configuration, then proves it: it files one probe timesheet entry,
-reads it back field by field, and deletes it. Entries can be deleted; matters cannot,
-which is why the proof is an entry.
+reads it back field by field — date, times, description, executante, área and rate
+table — and deletes it. Entries can be deleted; matters cannot, which is why the
+proof is an entry.
+
+**Most of that can happen in conversation instead.** Once the connector is wired to
+Claude, asking for *Configurar o Legal One* does the same discovery, shows you the
+evidence behind every value, asks about what your records do not settle, and writes
+the configuration — no terminal. What it will not do is file the probe: a
+conversation should not write to production on its own. So a configuration written
+that way is marked **provisional**, and booking hours stays refused until you run
+`bun run setup --write` once. Reading, searching, planning and dry runs work
+meanwhile.
 
 ### Connecting it to Claude
 
@@ -265,6 +275,8 @@ is, and it is the thing to preserve if you change anything here.
 setup.ts            command  — sign in, check the tenant, configure, prove it.
 mcp.ts              command  — the MCP server, over stdio.
 src/mcp/            surface  — nineteen tools wrapping the library. No new rules.
+src/mcp/prompts.ts  surface  — the procedures a person starts on purpose.
+src/config.ts       config   — the firm's configuration, loaded at runtime.
 src/client.ts       mechanism — the HTTP surface. No policy, no auth decisions.
 src/cdp.ts          mechanism — a dependency-free DevTools Protocol client.
 src/session.ts      policy   — where a credential comes from, and when to ask a human.
@@ -277,14 +289,13 @@ src/setup.ts        setup    — reads a firm's own records to propose its confi
 src/template.ts     setup    — proposes a create template from the tenant's form.
 src/export.ts       data     — pulls the timesheet out as an analysable table.
 src/xlsx.ts         mechanism — just enough of the xlsx format to read a report.
-src/config.ts       config   — the firm's configuration, loaded at runtime.
 config/aliases.json          — name drift and firm constants, outside the clone.
 config/template.json         — invariant create fields, per tenant.
 verify.ts           gate     — regenerates captured payloads and diffs them.
 mcp-check.ts        gate     — the agent-facing contract, offline.
+config-check.ts     gate     — configuration and the alias refusals, offline.
 session-check.ts    gate     — expiry detection and renewal, offline.
 execute-check.ts    gate     — never book the same hour twice, offline.
-SKILL.md            the agent-facing contract.
 ```
 
 The split matters: `client` knows *how* to talk to Legal One, `resolver` knows
@@ -578,9 +589,19 @@ rather than being handed one blessed workflow. Wiring it up is in
 [Connecting it to Claude](#connecting-it-to-claude); what follows is what a tool
 author needs to know.
 
-`SKILL.md` is the contract in full, and the MCP tool descriptions restate it: each
-one says what it does *and when not to use it*, because eighteen tools means an agent
-can reach for the wrong one.
+The contract is the surface itself, in three layers. The server's `instructions` are
+always in the model's context and carry only what must hold when nothing was invoked:
+the two gates, plan-before-log, and that sign-in is a handoff rather than a retry.
+The prompts in `src/mcp/prompts.ts` are the long procedures a person starts on
+purpose, and appear in the client under Portuguese names. Tool descriptions say what
+each does *and when not to use it*, because nineteen tools means an agent can reach
+for the wrong one.
+
+There used to be a fourth copy, `SKILL.md`, and it had already drifted — it taught
+`planEntries(client, entries)` while the instructions said to run `plan_entries`, one
+of which is a library call no MCP client can make. `mcp-check.ts` now asserts that
+every name these surfaces use is a tool that exists and that none of them speaks in
+function calls.
 
 Three parts of the contract are worth knowing before wiring an agent to this.
 

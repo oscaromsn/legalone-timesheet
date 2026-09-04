@@ -13,7 +13,7 @@ import { planEntries } from '../resolver.ts';
 import { executePlan, entryKey, format as formatRun, type Decision } from '../execute.ts';
 import { proposeMatter, validateAnswers, createFromProposal } from '../interview.ts';
 import { diagnose, format as formatDoctor } from '../doctor.ts';
-import { discover, format as formatDiscovery } from '../setup.ts';
+import { configProvisional, configVersion } from '../config.ts';
 import { context, guard, type ToolResult } from './context.ts';
 import type { Tool } from './tools-read.ts';
 
@@ -47,6 +47,7 @@ export const writeTools: Tool[] = [
       const planned = await read(() => planEntries(client, lines), renew);
       return {
         ok: true,
+        configVersion: configVersion(),
         entries: planned.map((p) => ({
           key: entryKey(p.date, p.startTime, p.endTime),
           description: p.description.slice(0, 120),
@@ -75,9 +76,40 @@ export const writeTools: Tool[] = [
         reason: z.string().optional(),
       })).default({}),
       dryRun: z.boolean().default(false),
+      configVersion: z.string().optional(),
     },
-    run: ({ lines, decisions, dryRun }) => guard(async () => {
+    run: ({ lines, decisions, dryRun, configVersion: expected }) => guard(async () => {
       const { client, renew } = await context();
+
+      /*
+       * A configuration written from a conversation has never been proved against
+       * Legal One. `doctor` cannot prove it — it runs with no installed template, so
+       * its template checks never fire and an unverified configuration passes clean —
+       * and the only real proof writes a probe entry to production, which this
+       * surface deliberately does not do. Reading and planning stay open; booking
+       * hours under an unproved template would file them under whichever executante
+       * and rate the template happens to carry.
+       */
+      if (configProvisional() && !dryRun) {
+        return {
+          ok: false,
+          error: 'the configuration has not been proved against Legal One yet',
+          hint:
+            'It was written from a conversation and is marked provisional. Run `bun run setup --write` in the ' +
+            'repository: it files one probe entry, reads it back field by field and deletes it. Planning, reading ' +
+            'and dryRun work meanwhile.',
+        };
+      }
+      if (expected && expected !== configVersion()) {
+        return {
+          ok: false,
+          error: 'the configuration changed between the plan and this write',
+          hint:
+            `The plan was made under ${expected} and the configuration in force is ${configVersion()}. Run ` +
+            'plan_entries again and show the person the new result — this re-plans internally, so writing now ' +
+            'would execute something they did not approve.',
+        };
+      }
       const planned = await read(() => planEntries(client, lines), renew);
       const mapped: Record<string, Decision> = {};
       for (const [key, d] of Object.entries(decisions as Record<string, any>)) {
@@ -88,6 +120,7 @@ export const writeTools: Tool[] = [
       const report = await executePlan(client, planned, { decisions: mapped, dryRun, renew });
       return {
         ok: true, dryRun,
+        configVersion: configVersion(),
         written: report.written, alreadyLogged: report.alreadyLogged, held: report.held,
         heldHours: Number((report.heldMinutes / 60).toFixed(2)),
         outcomes: report.outcomes.map((o) => ({ key: o.key, status: o.status, id: o.id, detail: o.detail })),
@@ -216,19 +249,6 @@ export const writeTools: Tool[] = [
         };
       }
       return { ok: true, ...body };
-    }),
-  },
-  {
-    name: 'discover_config',
-    description:
-      'Reads the firm\'s own records and proposes the configuration ids, with the evidence behind each. Writes ' +
-      'nothing. Values the records disagree on are reported as such — a mode is a proposal, not a decision, and ' +
-      'adopting one is done with `bun run setup --write`, not from here.',
-    schema: { days: z.number().int().min(1).max(730).default(120) },
-    run: ({ days }) => guard(async () => {
-      const { client } = await context();
-      const d = await discover(client, { days });
-      return { ok: true, entriesSampled: d.entriesSampled, mattersSampled: d.mattersSampled, findings: d.findings, warnings: d.warnings, report: formatDiscovery(d) };
     }),
   },
 ];

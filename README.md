@@ -138,7 +138,7 @@ warning being values the firm's own records disagree on, which is a thing to rea
 rather than a thing to fix.
 
 <details>
-<summary>The eighteen tools, if you want to see the surface</summary>
+<summary>The nineteen tools, if you want to see the surface</summary>
 
 | group | tools |
 |---|---|
@@ -147,7 +147,8 @@ rather than a thing to fix.
 | analysis | `export_timesheet` |
 | time | `plan_entries`, `log_entries`, `update_entry`, `delete_entry`, `set_entry_status` |
 | matters | `propose_matter`, `create_matter` |
-| diagnostics | `doctor`, `discover_config` |
+| setup | `propose_config`, `apply_config` |
+| diagnostics | `doctor` |
 
 </details>
 
@@ -263,7 +264,7 @@ is, and it is the thing to preserve if you change anything here.
 ```
 setup.ts            command  — sign in, check the tenant, configure, prove it.
 mcp.ts              command  — the MCP server, over stdio.
-src/mcp/            surface  — eighteen tools wrapping the library. No new rules.
+src/mcp/            surface  — nineteen tools wrapping the library. No new rules.
 src/client.ts       mechanism — the HTTP surface. No policy, no auth decisions.
 src/cdp.ts          mechanism — a dependency-free DevTools Protocol client.
 src/session.ts      policy   — where a credential comes from, and when to ask a human.
@@ -572,7 +573,7 @@ Known parser hazards, all previously silent:
 
 ## The agent-facing contract
 
-`mcp.ts` exposes the library as an MCP server — eighteen tools, so an agent composes
+`mcp.ts` exposes the library as an MCP server — nineteen tools, so an agent composes
 rather than being handed one blessed workflow. Wiring it up is in
 [Connecting it to Claude](#connecting-it-to-claude); what follows is what a tool
 author needs to know.

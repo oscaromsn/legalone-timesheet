@@ -48,6 +48,18 @@ const FirmSchema = z.looseObject({
   internal: z.looseObject({ prefixes: z.array(z.string()) }),
   defaults: DefaultsSchema,
   titleFormat: z.string().nullable(),
+  /*
+   * True while a configuration has been written but never proved against Legal One.
+   *
+   * A configuration written from a conversation is unverified in a way the terminal
+   * path is not: `doctor` runs with no installed template, so its template checks
+   * cannot fire, and a conversationally-written configuration passes it clean. The
+   * only real proof is the probe entry `setup --write` files and deletes, and that
+   * writes to production, which the conversational flow deliberately does not.
+   *
+   * So it is marked instead, and booking hours refuses while the mark is there.
+   */
+  provisional: z.boolean().optional(),
 });
 
 const TemplateSchema = z.array(z.tuple([z.string(), z.string()]));
@@ -77,6 +89,9 @@ const EMPTY_FIRM: FirmConfig = {
   defaults: { ...EMPTY_DEFAULTS },
   titleFormat: null,
 };
+
+/** Whether the configuration in force has ever been proved against Legal One. */
+export const configProvisional = (): boolean => firmConfig().provisional === true;
 
 /**
  * Where a firm's configuration lives. Beside the browser profile and the exports,

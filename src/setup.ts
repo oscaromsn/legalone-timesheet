@@ -20,6 +20,8 @@
  * therefore carries how many records agreed and what else was seen.
  */
 import type { LegalOneTimesheet } from './client.ts';
+import { clientNameOf } from './resolver.ts';
+import { firmConfig } from './config.ts';
 
 const ENTRY_FORM = '/TimeSheet/HorasTrabalhadas/EditHoraTrabalhada';
 
@@ -259,3 +261,169 @@ export const format = (d: Discovery): string => {
   lines.push('', 'aliases are not discovered: they are billing decisions, and stay empty until written by hand.');
   return lines.join('\n');
 };
+
+/*
+ * ---------------------------------------------------------------------------
+ * Aliases, which this file spent its whole life refusing to discover.
+ *
+ * The refusal was right for the reason it gave: an alias is a billing decision,
+ * it applies to every future line whose head matches, and a wrong one books hours
+ * against the wrong client with nothing to surface it. What changed is not that
+ * judgement but who exercises it — a lawyer talking to an agent cannot open the
+ * file, so "written by hand" means "never written".
+ *
+ * So this proposes, and the refusals below are the whole design. Pairing the head of
+ * a description with the registered `Cliente` of the matter it was booked to is a
+ * *per-matter* observation being generalised into a *global* rewrite, and most of the
+ * ways that goes wrong are silent:
+ *
+ *   `Reunião: ...`, `Audiência — ...`, `TJSP — ...` are heads that are not clients at
+ *   all. Pair one and every meeting line, for every client, resolves `linked` to
+ *   whichever company happened to be first. Not `ambiguous`, not `escalate` —
+ *   `linked`, with a confident plan a lawyer approves.
+ *
+ *   Frequency points the wrong way. Generic heads co-occur with everything, so they
+ *   carry the highest counts. Count is evidence, never ranking.
+ *
+ *   On a criminal matter the registered client is the individual defendant, so
+ *   pairing correctly yields company → individual — right for that matter and wrong
+ *   for the next one the company files under its own name.
+ * ---------------------------------------------------------------------------
+ */
+
+/** One proposed rewrite, with everything a person needs to judge it. */
+export interface AliasCandidate {
+  /** What the timesheet line says. */
+  head: string;
+  /** What Legal One files it under. */
+  registered: string;
+  entries: number;
+  matters: number[];
+  /** Verbatim lines this was read from, so the evidence is not a summary. */
+  samples: Array<{ id: number; date: string; description: string }>;
+  /** What a search for each returns today — the counterfactual the alias changes. */
+  hitsForHead: number;
+  hitsForRegistered: number;
+}
+
+export interface AliasDiscovery {
+  candidates: AliasCandidate[];
+  /** Heads deliberately not proposed, and why. Shown, because silence looks like absence. */
+  refused: Array<{ head: string; reason: string }>;
+  /** Heads whose entries were booked to no matter — a question, not a proposal. */
+  unpaired: string[];
+  entriesSampled: number;
+}
+
+const fold = (s: string): string =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+/**
+ * Reasons never to propose a head, checked before anything costs a request.
+ *
+ * Exported so a gate can measure the real rule rather than a copy of it: these are
+ * the only thing standing between this feature and a wrong-answer generator.
+ */
+export const aliasRefusal = (head: string, registered: string, distinctClients: number): string | null => {
+  if (distinctClients > 1) {
+    return `appears with ${distinctClients} different registered clients, so it names work, not a party`;
+  }
+  if (firmConfig().internal.prefixes.some((p) => head.startsWith(p))) {
+    return 'is an internal-work prefix, which is booked to the firm rather than aliased';
+  }
+  if (head.length < 3) return 'is too short to identify anyone';
+  if (/^\d{1,2}[/.-]\d{1,2}/.test(head) || /^\d{7}-\d{2}/.test(head)) return 'is a date or a case number, not a name';
+  if (/[(,]| e /.test(registered)) {
+    return `the registered name carries a procedural role or several parties ("${registered}"), which no contact search matches`;
+  }
+  if (fold(registered).includes(fold(head))) return 'is already contained in the registered name, so the search finds it without an alias';
+  return null;
+};
+
+/**
+ * Proposes the alias table from entries the firm has already booked.
+ *
+ * Returns candidates only where the head and the registered name genuinely differ and
+ * nothing above refused them. Nothing here decides: every survivor is meant to be
+ * approved one at a time, against its own evidence.
+ */
+export async function discoverAliases(
+  client: LegalOneTimesheet,
+  options: DiscoverOptions = {},
+): Promise<AliasDiscovery> {
+  const days = options.days ?? 90;
+  const maxEntries = options.maxEntries ?? 60;
+  const now = options.now ?? new Date();
+  const from = new Date(now.getTime() - days * 86_400_000);
+
+  const entries = await client.listEntries(ddmmyyyy(from), ddmmyyyy(now));
+  const sampled = entries.slice(0, maxEntries);
+  if (sampled.length === 0) return { candidates: [], refused: [], unpaired: [], entriesSampled: 0 };
+
+  /** head → the matters its lines were booked to, and the lines themselves. */
+  const byHead = new Map<string, { matters: Set<number>; samples: AliasCandidate['samples'] }>();
+  const unpaired = new Set<string>();
+
+  for (const entry of sampled) {
+    const head = clientNameOf(entry.descricao ?? '');
+    if (!head) continue;
+    const { pairs } = await client.readFormPairs(`${ENTRY_FORM}/${entry.id}`);
+    const matter = Number(byLeaf(pairs, 'VinculoGridId') ?? '');
+    if (!Number.isInteger(matter) || matter <= 0) { unpaired.add(head); continue; }
+    const slot = byHead.get(head) ?? { matters: new Set<number>(), samples: [] };
+    slot.matters.add(matter);
+    if (slot.samples.length < 3) {
+      slot.samples.push({ id: entry.id, date: (entry.inicio ?? '').slice(0, 10), description: entry.descricao ?? '' });
+    }
+    byHead.set(head, slot);
+  }
+
+  /** Matters are read once each, however many heads point at them. */
+  const clientOf = new Map<number, string>();
+  for (const id of new Set([...byHead.values()].flatMap((s) => [...s.matters]))) {
+    for (const kind of ['processo', 'incidente'] as const) {
+      try {
+        const m = await client.readMatter(id, kind);
+        const name = m['Cliente.EnvolvidoText'];
+        if (name) clientOf.set(id, name);
+        break;
+      } catch { /* try the other path */ }
+    }
+  }
+
+  const candidates: AliasCandidate[] = [];
+  const refused: Array<{ head: string; reason: string }> = [];
+
+  for (const [head, slot] of byHead) {
+    const names = [...new Set([...slot.matters].map((id) => clientOf.get(id)).filter((n): n is string => !!n))];
+    if (names.length === 0) { unpaired.add(head); continue; }
+    const registered = names[0]!;
+    if (fold(registered) === fold(head) && names.length === 1) continue; // no drift to correct
+
+    const reason = aliasRefusal(head, registered, names.length);
+    if (reason) { refused.push({ head, reason }); continue; }
+
+    /*
+     * The last refusal costs two requests, so it runs last: if searching the head
+     * already finds exactly one matter, the alias cannot improve anything and can
+     * only redirect a search that works today.
+     */
+    const hitsForHead = (await client.searchProcessos(head, 1)).length;
+    if (hitsForHead === 1) {
+      refused.push({ head, reason: 'already finds exactly one matter without an alias' });
+      continue;
+    }
+    const hitsForRegistered = (await client.searchProcessos(registered, 1)).length;
+    candidates.push({
+      head,
+      registered,
+      entries: slot.samples.length,
+      matters: [...slot.matters],
+      samples: slot.samples,
+      hitsForHead,
+      hitsForRegistered,
+    });
+  }
+
+  return { candidates, refused, unpaired: [...unpaired], entriesSampled: sampled.length };
+}

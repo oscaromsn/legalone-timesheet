@@ -8,8 +8,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { readTools, type Tool } from './tools-read.ts';
 import { writeTools } from './tools-write.ts';
+import { configTools } from './tools-config.ts';
 
-export const allTools: Tool[] = [...readTools, ...writeTools];
+export const allTools: Tool[] = [...readTools, ...writeTools, ...configTools];
 
 export function buildServer(): McpServer {
   const server = new McpServer(

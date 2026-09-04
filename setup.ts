@@ -210,12 +210,26 @@ async function selfTest(client: LegalOneTimesheet, link: Link): Promise<void> {
   try {
     const { pairs } = await client.readFormPairs(`/TimeSheet/HorasTrabalhadas/EditHoraTrabalhada/${id}`);
     const value = (name: string) => pairs.find(([k]) => k === name || k.split('.').pop() === name)?.[1] ?? '';
+    /*
+     * The four fields the template carries were never read back, and they are the
+     * ones a wrong configuration gets wrong. `client.ts` says out loud that a fixed
+     * `ExecutanteId` would "reassign someone else's work to the template's
+     * executante" — so a probe that checks only date, times and description prints
+     * "round-tripped: all match" over an entry booked to the wrong lawyer in the
+     * wrong área at the wrong rate. Checking them is what makes this a proof.
+     */
+    const fromTemplate = (leaf: string): string =>
+      entryTemplate().find(([k]) => k.split('.').pop() === leaf)?.[1] ?? '';
+
     const mismatches = [
       ['DtInicio', date],
       ['HrInicio', '00:00:00'],
       ['HrTermino', '00:01:00'],
       ['DescricaoHT', marker],
-    ].filter(([name, want]) => value(name!) !== want);
+      ['ExecutanteId', fromTemplate('ExecutanteId')],
+      ['AreaId', fromTemplate('AreaId')],
+      ['TabelaValoresId', fromTemplate('TabelaValoresId')],
+    ].filter(([name, want]) => want !== '' && value(name!) !== want);
 
     if (mismatches.length > 0) {
       throw new Error(
@@ -223,7 +237,23 @@ async function selfTest(client: LegalOneTimesheet, link: Link): Promise<void> {
           mismatches.map(([n, w]) => `${n} wanted "${w}", got "${value(n!)}"`).join('; '),
       );
     }
-    say(`  entry ${id} round-tripped: date, both times and description all match.`);
+    say(`  entry ${id} round-tripped: date, times, description, executante, área and rate table all match.`);
+
+    /*
+     * The rate is reported rather than asserted, because it is the one field the
+     * server may legitimately overwrite: the rate block is populated by the
+     * recalculation that fires when a link is chosen. Whether Legal One recalculates
+     * on save was never measured, and the answer decides whether the value belongs
+     * in the template at all — so every run measures it.
+     */
+    const sentRate = fromTemplate('ValorHoraCobranca');
+    const gotRate = value('ValorHoraCobranca');
+    if (sentRate && gotRate !== sentRate) {
+      say(`  note: the rate was sent as "${sentRate}" and came back "${gotRate}" — Legal One recalculated it,`);
+      say('        so the template\'s rate is not what gets billed.');
+    } else if (sentRate) {
+      say(`  the rate posted as "${sentRate}" is the rate that was filed — the template's value is what bills.`);
+    }
   } finally {
     await client.delete(id);
     say(`  probe entry ${id} deleted.`);
@@ -346,6 +376,16 @@ async function main(): Promise<number> {
     id: Number(defaults['contatoEscritorioId']),
     text: defaults['contatoEscritorioText'] ?? '',
   });
+
+  /*
+   * The probe is the only proof this configuration has ever had, so clearing the
+   * mark is the last thing that happens and only on the path where it passed —
+   * `selfTest` throws on a mismatch and never reaches here.
+   */
+  if (firmConfig().provisional) {
+    writeConfig({ firm: { ...firmConfig(), provisional: false } });
+    say('  configuration marked proved — booking hours is no longer refused.');
+  }
 
   say();
   say('Done. Run again to re-check, or run the gates:');

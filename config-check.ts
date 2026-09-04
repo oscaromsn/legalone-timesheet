@@ -9,6 +9,10 @@
  * example: three fictional aliases that rewrite a real client name into a company
  * that does not exist, after which the search reports it unregistered.
  *
+ * It also covers the alias refusals, which are configuration in the sense that
+ * matters: an alias applies to every future line whose head matches, so a wrong one
+ * books hours against the wrong client for as long as nobody notices.
+ *
  * Offline, no tenant, no fixtures. Every case works on a temp directory.
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -136,6 +140,31 @@ const at = async (dir: string) => {
   try { c.configState(); } catch (e) { message = (e as Error).message; }
   check('a configuration missing required keys names the key',
     /internal|escritorioOrigemId/.test(message), message);
+}
+
+{
+  process.env['LEGALONE_CONFIG_DIR'] = scratch();
+  const { aliasRefusal } = await import('./src/setup.ts');
+  const refused = (h: string, r: string, n = 1) => aliasRefusal(h, r, n) !== null;
+
+  check('a head seen with several clients is refused — it names work, not a party',
+    refused('Reunião', 'ACME PARTICIPAÇÕES LTDA', 3));
+  check('and the refusal says which, so it reads as a finding rather than a gap',
+    /3 different registered clients/.test(aliasRefusal('Reunião', 'ACME', 3) ?? ''));
+  check('a head already contained in the registered name is refused',
+    refused('Acme', 'ACME PARTICIPAÇÕES LTDA'));
+  check('accents do not defeat that — the search finds it either way',
+    refused('Participações', 'ACME PARTICIPACOES LTDA'));
+  check('a registered name carrying a procedural role is refused',
+    refused('Fulano', 'FULANO DE TAL (Réu)'));
+  check('a registered name naming several parties is refused',
+    refused('Fulano', 'FULANO DE TAL e OUTRO'));
+  check('a date is not a client name', refused('12/03', 'ACME LTDA'));
+  check('a case number is not a client name', refused('0000000-00', 'ACME LTDA'));
+  check('a two-character head is refused', refused('JR', 'JOÃO RIBEIRO'));
+  check('a genuine drift survives every refusal',
+    aliasRefusal('J. Ribeiro', 'João Ribeiro de Souza', 1) === null,
+    aliasRefusal('J. Ribeiro', 'João Ribeiro de Souza', 1) ?? '');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

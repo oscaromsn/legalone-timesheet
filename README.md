@@ -1,14 +1,249 @@
 # legalone-timesheet
 
-Log timesheet entries and manage matters in **Legal One (NovaJus)** from a script or
-an agent, without touching the web UI.
+Work your Legal One timesheet from a conversation. Ask where last month's hours went,
+log a week from your notes, look up a matter, register a new one — and have the
+answers come from the system your firm already files in, not from a copy of it.
 
-Legal One has no public API. This drives the same server-rendered ASP.NET forms the
-browser drives, reconstructed from captured traffic. It works, it is not officially
-supported, and it will break if Legal One changes its markup — so every write reads
-itself back and raises when the result doesn't match.
+Legal One (NovaJus) has no public API, so this drives the same server-rendered forms
+your browser drives. It is not officially supported by Thomson Reuters, and it will
+break if Legal One changes its markup. Every write reads itself back and raises when
+the result does not match, because these forms fail quietly: **a rejected save returns
+HTTP 200 with the page re-rendered**, which is byte-for-byte the shape of a success.
+
+**Two doors.** To use this from Claude, the next four sections are everything. To
+integrate it into your own code, or to maintain it, skip to
+[For developers](#for-developers).
 
 ---
+
+## Setting it up
+
+This part needs a terminal, once. After it you should not see one again.
+
+You need a **Mac** with **Google Chrome** installed (Edge or Chromium also work),
+[**Bun**](https://bun.sh) or **Node**, and your ordinary Legal One login — the same one
+you type in the browser, second factor and all. You do not need an API key, because
+there is no API to key.
+
+Windows and Linux are written and typechecked but have never been run; see
+[Limits](#limits).
+
+```bash
+git clone https://github.com/oscaromsn/legalone-timesheet
+cd legalone-timesheet
+bun install          # also puts the two config files in place
+bun run setup        # opens a browser window for you to sign in
+```
+
+The first run always ends by asking you to sign in. That is not a failure — it has no
+session yet, and only you can create one:
+
+```
+[  0s] no browser profile yet, so there is no sign-on to renew — going straight to a window
+[  0s] starting Google Chrome in a visible window — first run on a new profile, which takes longer
+[  1s] window open — loading the sign-on page
+Sign in required.
+A browser window is open at https://signon.thomsonreuters.com/?productId=L1NJ. Sign in there, then run this again.
+```
+
+Sign in on that window, then run `bun run setup` again. This time it finds your
+tenant, checks that this client's assumptions actually hold against your firm's
+install, and reads a proposed configuration off records your firm has already filed —
+which escritório, which responsável, which natureza your matters really carry. It
+shows you the evidence and changes nothing.
+
+Read the proposal. When it looks right:
+
+```bash
+bun run setup --write
+```
+
+That saves the configuration, then proves it: it files one probe timesheet entry,
+reads it back field by field, and deletes it. Entries can be deleted; matters cannot,
+which is why the proof is an entry.
+
+### Connecting it to Claude
+
+Add this to `claude_desktop_config.json` — on a Mac,
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "legalone": {
+      "command": "/usr/local/bin/node",
+      "args": ["/absolute/path/to/legalone-timesheet/mcp.ts"]
+    }
+  }
+}
+```
+
+Two details that cost people an afternoon:
+
+**Use the absolute path to `node`** (`which node` prints yours). Applications launched
+from the macOS Dock do not inherit your shell's `PATH`, so a bare `"node"` fails with
+nothing useful in the logs.
+
+**Node, not Bun.** The MCP SDK imports `zod/v3`; Node resolves that subpath and Bun
+1.4 does not. Everything else here runs under either.
+
+Restart Claude Desktop — the config is read at launch — and ask it something.
+
+---
+
+## What you can ask
+
+Plain requests. The agent picks the tools; you do not have to know their names.
+
+**Looking at your hours**
+
+> Export my timesheet for last month and tell me where the hours went.
+
+> How many hours did I log to Acme in the second quarter, and on what?
+
+> Which of my entries are still pending?
+
+Analysis runs off a real `.xlsx` that Legal One generates — one row per entry,
+thirteen columns — so an agent with data tooling can pivot it, chart it, and compare
+periods. It takes about twenty seconds and lands as a file, not as a wall of rows in
+the conversation.
+
+**Logging time**
+
+> Here are my notes from Tuesday. Plan the entries but do not file anything yet.
+
+> File the three you classified as linked. Hold the rest.
+
+> Change yesterday's 14:00 entry to end at 15:30.
+
+Planning is always separate from filing. The plan tells you, for every line, whether
+it found the matter, found several, found the client but no matter, or found nothing
+at all — before a single hour is written.
+
+**Matters and contacts**
+
+> Is Acme registered? What matters do we have for them?
+
+> Find the matter for CNJ 0000000-00.0000.0.00.0000.
+
+> Draft a new matter for that inquiry — ask me whatever you need.
+
+**Checking the install**
+
+> Run the doctor against our tenant.
+
+Nine checks against your firm's own Legal One, each reporting what it observed. On
+the install this was built against it returns *8 ok, 1 warning, 0 failures* — the
+warning being values the firm's own records disagree on, which is a thing to read
+rather than a thing to fix.
+
+<details>
+<summary>The eighteen tools, if you want to see the surface</summary>
+
+| group | tools |
+|---|---|
+| session | `authenticate`, `session_status` |
+| reading | `list_entries`, `search_matters`, `search_contacts`, `resolve_matter_by_cnj`, `read_matter`, `lookup` |
+| analysis | `export_timesheet` |
+| time | `plan_entries`, `log_entries`, `update_entry`, `delete_entry`, `set_entry_status` |
+| matters | `propose_matter`, `create_matter` |
+| diagnostics | `doctor`, `discover_config` |
+
+</details>
+
+---
+
+## What it will not do without you
+
+The point of this design is that the expensive mistakes are unavailable, not merely
+discouraged.
+
+**It never books the same hour twice.** Entries are matched by their exact time span,
+never by their description — descriptions come back from Legal One with whitespace
+collapsed, so comparing text would miss, and a miss files a duplicate. If it cannot
+read the timestamps already in your tenant, it refuses to write anything at all
+rather than assume the range is empty.
+
+**It never guesses which client.** A line that matches several matters, or matches a
+registered client with no matter, comes back as a question. Hours booked against the
+wrong client are invisible afterwards — nothing in Legal One surfaces them — so
+guessing is worse than stopping.
+
+**Registering a matter needs your explicit approval.** Matters cannot be deleted with
+a normal user's permissions, so `propose_matter` shows you the answers and issues a
+token for exactly those answers; `create_matter` refuses any other. An agent cannot
+show you one set of answers and file a different one, by mistake or by reconsidering
+halfway.
+
+**Hours it could not file are reported as hours, not as a footnote.** A held entry is
+time that will go unbilled unless a person sees it, so the total is stated in hours
+every run.
+
+**Being asked to sign in is an answer.** When your single sign-on lapses, the tools
+return *sign-in required* with the URL of a window that is already open. The right
+response is to sign in — retrying changes nothing, and the agent is told so.
+
+**Approving entries toward invoicing is a separate call** that this has deliberately
+never made against a live system. See [Limits](#limits).
+
+---
+
+## Your firm's data
+
+A short answer to the question a partner will ask.
+
+**Nothing is sent anywhere except Legal One.** There is no server in the middle, no
+telemetry, no third-party service. The only network traffic is between your machine
+and your own tenant.
+
+**Your sign-on lives in a browser profile this tool owns**, in the per-OS application
+directory — never in the repository. It holds a renewable Thomson Reuters single
+sign-on session, it survives reboots, and it is not scoped to timesheets. Treat that
+directory as a secret:
+
+```bash
+# macOS; %LOCALAPPDATA%\legalone-timesheet\browser on Windows
+chmod 700 ~/Library/Application\ Support/legalone-timesheet/browser
+```
+
+Deleting it revokes everything and costs one sign-in.
+
+**Three kinds of file are never committed**, and `.gitignore` enforces it: the
+configuration (`src/aliases.json`, `src/template.json`) because it carries client
+names, internal ids and your billing rate; captured traffic under `fixtures/` because
+a captured request is client data plus a live credential; and any run scripts, because
+they name real clients.
+
+**Exporting leaves a row in your firm's Legal One.** A `.xlsx` export is a report job
+queued on the server, and it appears in the generated-reports list your colleagues can
+see. It is not private to you, and each export adds one. Worth knowing before you ask
+an agent to try five variations of a question.
+
+**What you can see is what your account can see.** Timesheet reads and exports come
+back scoped to the signed-in user; this tenant does not return other people's entries
+whatever filter is applied. Firm-wide figures need a different permission, not
+different software.
+
+---
+
+## When something goes wrong
+
+| what you see | what it means | what to do |
+|---|---|---|
+| `Sign in required` on a first run | normal — there is no session yet | sign in on the open window, run it again |
+| `no Legal One tenant configured` | something ran before `setup` did | run `bun run setup`, then `--write` |
+| a value reading `<placeholder>` | `setup` proposed a configuration you never adopted | run `bun run setup --write` |
+| `browser started but wrote nothing into …` | the browser cannot write its profile directory — a sandbox or an endpoint policy, not Legal One | point `LEGALONE_PROFILE_DIR` somewhere writable, or run outside the sandbox |
+| `browser did not open a debugging port … another instance` | a second copy is holding that profile | close it, or set `LEGALONE_PROFILE_DIR` |
+| `refusing to write: N of M existing entries carry timestamps this client cannot read` | your tenant renders dates or times differently, so the duplicate check would fail open | run the doctor and read what it says about time format |
+| Claude Desktop shows the server as failed | almost always `"command": "node"` without a full path | use the output of `which node` |
+
+The connector writes its progress to stderr, which Claude Desktop keeps in its logs —
+that is the first place to look when a tool seems to hang rather than answer.
+
+---
+
+# For developers
 
 ## Why the design looks like this
 
@@ -57,56 +292,35 @@ resolver, not the client.
 
 ---
 
-## Install
+## Working on it
 
-Runs on [Bun](https://bun.sh) or Node. Both gates and the whole client work under
-either; the commands below say `bun`, and `node` does the same thing.
+The quick start above is the whole install. What it does not cover is the gates,
+which are the reason any of this can be changed safely.
 
 ```bash
-cd legalone-timesheet
-bun install              # also seeds the two config files, if they aren't there
-bun run typecheck        # must be clean
-bun run setup            # signs in, checks the tenant, proposes a configuration
+bun run typecheck         # must be clean
+bun run session-check.ts  # 39 passed — expiry detection and renewal, offline
+bun run execute-check.ts  # 8 passed  — never book the same hour twice, offline
+bun run mcp-check.ts      # 10 passed — the agent-facing contract, offline
+bun run verify.ts         # once you have captured a fixture
+node <each of the above>  # runtime parity; all four run under either
 ```
+
+The first three need no fixtures and no tenant, so they run on a fresh clone.
+`verify.ts` rebuilds your captured requests from the current code and diffs them
+field by field. **If it does not pass, do not write anything to Legal One** — it means
+the client no longer reproduces a request Legal One is known to have accepted.
+Fixtures are your own captured traffic and are not distributed; see *Maintenance*.
 
 Installing runs `seed.mjs`, which copies `src/aliases.example.json` and
 `src/template.example.json` into place if they are missing. That is seeding, not
-configuration: `client.ts` imports both files statically, so they have to exist
-before anything runs — a clone without them does not typecheck, and says so as four
-`TS2307`s naming a file the reader has never heard of. They arrive full of
-`<placeholder>` values that make the client fail loudly and by name, and `setup` is
-what fills them. Seeding never overwrites: the files it would clobber hold a firm's
-real client names, ids and billing rate.
+configuration: `client.ts` imports both statically, so a clone without them does not
+typecheck and says so as four `TS2307`s naming a file the reader has never heard of.
+They arrive full of `<placeholder>` values that make the client fail loudly and by
+name. Seeding never overwrites — the files it would clobber hold a firm's real client
+names, ids and billing rate.
 
-`setup` changes nothing on its own. It opens a browser for you to sign in, runs the
-doctor, reads a configuration off records your firm has already filed, and shows you
-the evidence for every value. Adopting it is a second, explicit step:
-
-```bash
-bun run setup --write    # commits the configuration, then proves it
-```
-
-`--write` files one probe entry, reads it back field by field and deletes it. On a
-tenant with no captured fixture that probe is the only gate there is, and entries —
-unlike matters — can be deleted, which is why it is an entry.
-
-The two config files are gitignored: they carry firm and client identity, so they are
-never something this repo ships filled. `setup` never overwrites the parts it cannot
-derive — your alias table, your internal prefixes, your title convention — because a
-wrong alias books hours against the wrong client and nothing surfaces it.
-
-```bash
-bun run session-check.ts  # no fixtures needed — must print "36 passed"
-bun run execute-check.ts  # no fixtures needed — must print "8 passed"
-bun run mcp-check.ts      # no fixtures needed — must print "10 passed"
-bun run verify.ts         # once you have captured a fixture
-```
-
-`verify.ts` rebuilds your captured requests from the current code and diffs them
-field by field. **If it doesn't pass, don't write anything to Legal One** — it means
-the client no longer reproduces a request that Legal One is known to have accepted.
-Fixtures are your own captured traffic and are not distributed; see *Maintenance*
-for how to capture one.
+---
 
 ### Credentials
 
@@ -131,25 +345,15 @@ against), you sign in again.
 **The profile is the credential now, and it is a bigger one than the dotfile was.**
 A `.env` held a cookie that died when you closed your browser. The profile holds a
 renewable single sign-on session for your Thomson Reuters account, it survives
-reboots, and it is not scoped to timesheets. Treat the directory as a secret:
+reboots, and it is not scoped to timesheets. Locking the directory down is covered
+in [Your firm's data](#your-firms-data); deleting it revokes everything and costs one
+sign-in.
 
-```bash
-# macOS; ~/.local/share/legalone-timesheet/browser on Linux,
-# %LOCALAPPDATA%\legalone-timesheet\browser on Windows
-chmod 700 ~/Library/Application\ Support/legalone-timesheet/browser
-```
-
-Deleting that directory revokes everything and costs one sign-in.
-`LEGALONE_PROFILE_DIR` moves it, which is also the only sane way to exercise a cold
-start: the alternative is moving `HOME`, and that moves the macOS keychain with it,
-so Chrome cannot reach its own safe storage and raises a modal that blocks the
-window. Measurements taken that way are of the modal.
-
-If a launch fails with *"browser started but wrote nothing into …"*, the browser is
-running but cannot write the profile directory it was handed. On a developer machine
-that is a sandbox — this reproduces under agent sandboxes and under corporate
-endpoint policy. Point `LEGALONE_PROFILE_DIR` somewhere writable, or run outside the
-sandbox. It is not a Legal One problem and no amount of retrying fixes it.
+`LEGALONE_PROFILE_DIR` moves it, and it is the only sane way to exercise a cold start.
+The alternative is moving `HOME` — which moves the macOS keychain with it, so Chrome
+cannot reach its own safe storage, raises a modal, and blocks the window for thirty
+seconds. A cold start measured that way took ninety-two seconds; measured properly it
+takes two. Both numbers were of the same code, and one of them was of a dialog box.
 
 `ClientOptions.cookie` still takes a plain string, which is the way to run this
 somewhere without a browser — CI, a container, a server. Put the `Cookie` header from
@@ -157,6 +361,8 @@ DevTools in `LEGALONE_COOKIE`, `chmod 600 .env`, and expect it to expire when th
 browser session does. Every call detects expiry and raises `SessionExpiredError`
 naming the request that hit it, so a dead cookie stops the run instead of being read
 as data.
+
+---
 
 ### Configure for your firm
 
@@ -191,6 +397,8 @@ no rate block until a link is chosen — so it names them and points you at
 `aliases` are never discovered. A wrong alias books hours against the wrong client
 and nothing surfaces it, so that half stays empty until written by hand.
 
+---
+
 ### Running on another tenant
 
 Every parsing rule in this client was derived from one Legal One install, and when
@@ -224,7 +432,10 @@ For anything the two miss, `client.lookup(...)` and `parseLookups(html)` — see
 import { LegalOneTimesheet } from './src/client.ts';
 import { planEntries } from './src/resolver.ts';
 
-const client = new LegalOneTimesheet({ cookie: process.env.LEGALONE_COOKIE! });
+import { browserSession } from './src/session.ts';
+
+const session = browserSession();
+const client = new LegalOneTimesheet({ cookie: session.cookie, baseUrl: session.tenant()! });
 
 const planned = await planEntries(client, entries);   // reads only, writes nothing
 ```
@@ -251,8 +462,10 @@ for (const p of planned) {
 }
 ```
 
-Keep per-week run scripts in `scripts/`. It is gitignored — those scripts name real
-clients — so nothing there ships with the repo.
+`cookie` takes a function as readily as a string, and passing `session.cookie`
+is what makes renewal silent: every request asks the session for a credential, and a
+lapsed one is re-minted before the call rather than after it fails. A plain string
+still works, and is the way to run somewhere without a browser.
 
 ---
 
@@ -357,26 +570,16 @@ Known parser hazards, all previously silent:
 
 ---
 
-## Using it from an agent
+## The agent-facing contract
 
-`mcp.ts` exposes the library as an MCP server — eighteen tools, so an agent can
-compose rather than being handed one blessed workflow. Add it to
-`claude_desktop_config.json`:
+`mcp.ts` exposes the library as an MCP server — eighteen tools, so an agent composes
+rather than being handed one blessed workflow. Wiring it up is in
+[Connecting it to Claude](#connecting-it-to-claude); what follows is what a tool
+author needs to know.
 
-```json
-{
-  "mcpServers": {
-    "legalone": {
-      "command": "node",
-      "args": ["/absolute/path/to/legalone-timesheet/mcp.ts"]
-    }
-  }
-}
-```
-
-**Node, not Bun.** The MCP SDK imports `zod/v3`; zod 4 exports that subpath and Node
-resolves it, but Bun 1.4's resolver does not. The library and all four gates run
-under either.
+`SKILL.md` is the contract in full, and the MCP tool descriptions restate it: each
+one says what it does *and when not to use it*, because eighteen tools means an agent
+can reach for the wrong one.
 
 Three parts of the contract are worth knowing before wiring an agent to this.
 
@@ -397,6 +600,8 @@ of roughly four hundred.
 
 Exports land in `~/Library/Application Support/legalone-timesheet/exports`, or
 wherever `LEGALONE_EXPORT_DIR` points.
+
+---
 
 ## Getting the data out
 
@@ -427,6 +632,8 @@ executante filter and the lookup does find other people, but the rows come back 
 your own regardless — confirmed by driving the real UI and capturing what it sends.
 Firm-wide figures need a different permission, not different code.
 
+---
+
 ## Limits
 
 - **Untested paths:** `createIncidente`, `setEntryStatus`, `createFromProposal`, and
@@ -436,7 +643,11 @@ Firm-wide figures need a different permission, not different code.
 - Approval transitions (`setEntryStatus`) move entries toward invoicing. Deliberately
   a separate call from `update`, and deliberately never exercised here.
 - Everything is derived from one tenant's forms. Another Legal One instance may
-  differ in field names, ids, and required fields.
+  differ in field names, ids, and required fields — which is what `doctor` is for.
+- **Only exercised on macOS.** The Windows and Linux paths are written and typechecked
+  — `defaultProfileDir` and `findBrowser` handle both, and cookies are read over the
+  DevTools protocol rather than out of Chrome's encrypted store, so neither Keychain
+  nor DPAPI is involved — but neither has been run.
 
 ---
 

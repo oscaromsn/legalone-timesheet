@@ -6,7 +6,11 @@
  * correctly, that a confirmation cannot be reused for different answers, and that
  * needing a person is a result rather than a failure.
  */
-import { allTools, INSTRUCTIONS } from './src/mcp/server.ts';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { allTools, buildServer, GATED_ON_CONFIG, INSTRUCTIONS, instructionsFor } from './src/mcp/server.ts';
+import { reloadConfig } from './src/config.ts';
 import { prompts } from './src/mcp/prompts.ts';
 import { guard, page } from './src/mcp/context.ts';
 import { LoginRequiredError } from './src/session.ts';
@@ -22,12 +26,17 @@ check('every tool declares a schema object', allTools.every((t) => typeof t.sche
 
 {
   /*
-   * Eighteen tools is a lot to choose between, and the mitigation for that is
+   * Nineteen tools is a lot to choose between, and the mitigation for that is
    * description rather than structure. A one-line description is how an agent picks
    * the wrong one.
+   *
+   * The count is printed rather than asserted, and it is printed because it drifted:
+   * this comment said eighteen while the README said nineteen and the surface had
+   * nineteen. A number in prose is a number nobody updates.
    */
   const thin = allTools.filter((t) => t.description.length < 120).map((t) => t.name);
-  check('every description is substantial enough to choose by', thin.length === 0, thin.join(', '));
+  check(`every one of the ${allTools.length} descriptions is substantial enough to choose by`,
+    thin.length === 0, thin.join(', '));
 }
 
 {
@@ -66,9 +75,19 @@ check('every tool declares a schema object', allTools.every((t) => typeof t.sche
 }
 
 {
+  /*
+   * The remedy has to be reachable from where the failure is read.
+   *
+   * This used to pin "bun run setup", which named a command that does not exist in
+   * the bundle a lawyer installs: it ships the compiled server, no scripts, and there
+   * is no clone to run it in. Pinning the tool instead — and pinning that no terminal
+   * is named — is what keeps the hint from drifting back to unreachable advice.
+   */
   const result = await guard(async () => { throw new Error('aliases.json: defaults.escritorioOrigemId is "<escritorio-id>"'); });
-  check('an unconfigured install points at setup instead of guessing',
-    result.ok === false && /bun run setup/.test(String((result as any).hint)));
+  const hint = String((result as any).hint);
+  check('an unconfigured install points at a tool it can actually call',
+    result.ok === false && /propose_config/.test(hint) && !/bun run/.test(hint), hint.slice(0, 80));
+  check('...and still refuses to guess ids', /do not guess ids/i.test(hint));
 }
 
 {
@@ -98,6 +117,7 @@ check('every tool declares a schema object', allTools.every((t) => typeof t.sche
   const names = new Set(allTools.map((t) => t.name));
   const surfaces: Array<{ where: string; text: string }> = [
     { where: 'instructions', text: INSTRUCTIONS },
+    { where: 'instructions (unconfigured)', text: instructionsFor(false) },
     ...allTools.map((t) => ({ where: `tool ${t.name}`, text: t.description })),
     ...prompts.map((p) => ({ where: `prompt ${p.name}`, text: `${p.description}\n${p.body({})}` })),
   ];
@@ -128,6 +148,80 @@ check('every tool declares a schema object', allTools.every((t) => typeof t.sche
     /before authenticate/i.test(setup.body({})) && /only on this computer|kept only/i.test(setup.body({})));
   check('the setup procedure refuses block approval of aliases',
     /ONE AT A TIME/.test(setup.body({})) && /never revive one the proposal refused/i.test(setup.body({})));
+}
+
+{
+  /*
+   * The handshake has to differ from a configured install's, and say the one thing
+   * that goes wrong when it does not.
+   *
+   * A real session read 62 timesheet lines, promised to classify them, and learned
+   * from a refused write that the installation had never been set up — because
+   * nothing before that point differed by one byte. What it then must not do is
+   * report an unfound name as unregistered, which is what the old refusal was
+   * protecting against and what the label replaces.
+   */
+  const cold = instructionsFor(false);
+  check('an unconfigured install says so at the handshake',
+    cold !== INSTRUCTIONS && /NOT CONFIGURED/.test(cold));
+  check('...and says planning still works there',
+    /plan_entries/.test(cold) && /propose_config/.test(cold));
+  check('...and forbids reporting an unfound name as unregistered',
+    /does NOT mean the client is unregistered/.test(cold));
+  check('...without sending anyone to a terminal', !/bun run|terminal|repository/i.test(cold));
+}
+
+{
+  /*
+   * Withheld rather than merely refusing: a tool an agent can see is a plan it will
+   * make, and the plan it made was to book 62 lines it could not book.
+   *
+   * Built for real in both states rather than asserted from the set, because the set
+   * is the intention and the registration is the behaviour. Toggling a RegisteredTool
+   * is what emits notifications/tools/list_changed, so a version of this that only
+   * checked the set would pass while the tool stayed visible all along.
+   */
+  check('booking is the tool withheld while unconfigured',
+    GATED_ON_CONFIG.has('log_entries') && GATED_ON_CONFIG.size === 1);
+  check('...and planning is never withheld', !GATED_ON_CONFIG.has('plan_entries'));
+
+  const visible = (dir: string): Set<string> => {
+    process.env['LEGALONE_CONFIG_DIR'] = dir;
+    reloadConfig();
+    const server = buildServer();
+    const registered = (server as any)._registeredTools as Record<string, { enabled: boolean }>;
+    return new Set(Object.entries(registered).filter(([, t]) => t.enabled).map(([name]) => name));
+  };
+
+  const cold = mkdtempSync(join(tmpdir(), 'legalone-cold-'));
+  const warm = mkdtempSync(join(tmpdir(), 'legalone-warm-'));
+  writeFileSync(join(warm, 'aliases.json'), JSON.stringify({
+    aliases: {}, internal: { prefixes: [] }, titleFormat: null,
+    defaults: {
+      escritorioOrigemId: '1', escritorioOrigemText: 'x', escritorioResponsavelId: '1',
+      escritorioResponsavelText: 'x', responsavelId: '2', responsavelText: 'x',
+      responsavelPosicaoId: '3', responsavelPosicaoText: 'x', naturezaId: '4', naturezaText: 'x',
+      contatoEscritorioId: '5', contatoEscritorioText: 'x',
+    },
+  }));
+
+  const priorConfigDir = process.env['LEGALONE_CONFIG_DIR'];
+  const withoutConfig = visible(cold);
+  const withConfig = visible(warm);
+  // Leave the environment as it was found: a check added after this one should not
+  // silently inherit a temp configuration.
+  if (priorConfigDir === undefined) delete process.env['LEGALONE_CONFIG_DIR'];
+  else process.env['LEGALONE_CONFIG_DIR'] = priorConfigDir;
+  reloadConfig();
+
+  check('an unconfigured server does not offer log_entries', !withoutConfig.has('log_entries'));
+  check('...but still offers plan_entries and propose_config',
+    withoutConfig.has('plan_entries') && withoutConfig.has('propose_config'));
+  check('a configured server offers all of them',
+    withConfig.has('log_entries') && withConfig.size === allTools.length,
+    `${withConfig.size} of ${allTools.length}`);
+  check('the two differ by exactly the gated tool',
+    allTools.length - withoutConfig.size === GATED_ON_CONFIG.size);
 }
 
 {

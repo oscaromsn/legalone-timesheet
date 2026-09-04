@@ -7,6 +7,7 @@
  */
 import { z } from 'zod';
 import { read } from '../auth.ts';
+import { classifyState, configProvisional, configState } from '../config.ts';
 import { exportTimesheet, hoursOf } from '../export.ts';
 import { context, sessionHandle, guard, page, type ToolResult } from './context.ts';
 
@@ -29,27 +30,66 @@ const dateArg = z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/, 'dd/MM/yyyy');
  */
 const pagesFor = (limit: number, offset: number): number => Math.ceil((limit + offset) / 18) + 1;
 
+/*
+ * The second gate, answered by the tool that clears the first.
+ *
+ * Signing in is the moment an agent starts planning what it will do, and until this
+ * existed the only way to learn the installation was unconfigured was to attempt a
+ * write and be refused — one turn after promising a person their week would be filed.
+ * It is stated, not delegated: nothing here tells the model to go looking for a file.
+ */
+const configuration = () => {
+  const write = configState();
+  const classify = classifyState();
+  return {
+    configured: write.configured,
+    provisional: write.configured && configProvisional(),
+    canPlan: true,
+    canBook: write.configured && !configProvisional(),
+    reasons: write.reasons,
+    nextStep:
+      !classify.aliasTable
+        ? 'call propose_config — this installation has never been set up. plan_entries works meanwhile, and ' +
+          'labels what it could not decide `unconfigured` rather than unregistered.'
+      : !write.configured
+        ? 'call propose_config to fill what is still unset; plan_entries works meanwhile'
+      : configProvisional()
+        ? 'the configuration has never been proved against Legal One: the next log_entries files one real ' +
+          'line, reads it back, and stops for a person to check it'
+        : null,
+  };
+};
+
 export const readTools: Tool[] = [
   {
     name: 'authenticate',
     description:
       'Establishes the Legal One session. Returns ready when it renewed silently (a few seconds, no window), ' +
       'or sign-in required with the URL of a browser window that is already open. Call it first, or when another ' +
-      'tool reports sign-in required. Never call it repeatedly hoping the state changes — a person has to act.',
+      'tool reports sign-in required. Never call it repeatedly hoping the state changes — a person has to act. ' +
+      'Also reports whether this installation is configured, so the answer arrives before any work is planned ' +
+      'rather than out of a refused write.',
     schema: {},
     run: () => guard(async () => {
       const session = sessionHandle();
       await session.cookie();
-      return { ok: true, state: 'ready', tenant: session.tenant() };
+      return { ok: true, state: 'ready', tenant: session.tenant(), configuration: configuration() };
     }),
   },
   {
     name: 'session_status',
-    description: 'Reports whether a session is held and for which tenant, without establishing one. Cheap; use it to explain state rather than to obtain access.',
+    description:
+      'Reports whether a session is held and for which tenant, and whether this installation is configured, ' +
+      'without establishing anything. Cheap; use it to explain state rather than to obtain access.',
     schema: {},
     run: async () => {
       const session = sessionHandle();
-      return { ok: true, tenant: session.tenant(), established: session.tenant() !== null };
+      return {
+        ok: true,
+        tenant: session.tenant(),
+        established: session.tenant() !== null,
+        configuration: configuration(),
+      };
     },
   },
   {

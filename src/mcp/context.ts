@@ -97,7 +97,20 @@ export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult>
     }
     const message = error instanceof Error ? error.message : String(error);
     if (/aliases\.json/.test(message)) {
-      return { ok: false, error: message, hint: 'The firm configuration is missing or still holds placeholders. Run `bun run setup` in the repository — do not guess ids.' };
+      /*
+       * This used to say "run `bun run setup` in the repository", which named
+       * something most installations do not have: the bundle a lawyer installs
+       * carries the compiled server and no scripts, and there is no clone to be in.
+       * propose_config reads the same records and is reachable from here.
+       */
+      return {
+        ok: false,
+        error: message,
+        hint:
+          'The firm configuration is missing or still holds placeholders. Call propose_config — it reads the ' +
+          'firm\'s own records and proposes the ids — then apply_config. Do not guess ids. plan_entries works ' +
+          'meanwhile and will show what it could not decide.',
+      };
     }
     if (/no Legal One tenant configured/.test(message)) {
       return { ok: false, error: message, hint: 'Call authenticate first — the tenant is discovered during sign-in.' };

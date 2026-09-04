@@ -287,5 +287,41 @@ const at = async (dir: string) => {
   check('a head with no binding is unaffected', unbound.kind !== 'bound');
 }
 
+{
+  /*
+   * A CNJ that resolves to nothing must not outrank a binding.
+   *
+   * Found by booking a real week. Three lines read "Rafael Bittencourt — medidas
+   * cautelares 5001234-56.2025.4.03.6100 (TRF3)", and that number is not filed in
+   * the tenant at all. The CNJ branch ran, found nothing, and fell straight to
+   * "registered, but the matter is not" — about a client whose matter the person had
+   * named explicitly ten minutes earlier. A number that resolves is more specific
+   * than a rule about a name; a number that resolves to nothing is not.
+   */
+  const { reloadConfig: reload } = await import('./src/config.ts');
+  const { resolveTarget } = await import('./src/resolver.ts');
+
+  const dir = scratch();
+  writeFileSync(join(dir, 'aliases.json'), JSON.stringify({
+    ...full(),
+    matters: { 'Rafael Bittencourt': { matterId: 1611, label: 'Proc - 0002468' } },
+  }));
+  writeFileSync(join(dir, 'template.json'), JSON.stringify([['SituacaoId', '0']]));
+  process.env['LEGALONE_CONFIG_DIR'] = dir;
+  reload();
+
+  // Nothing is filed under this number, and the contact does exist — the exact
+  // shape that produced the wrong verdict.
+  const client = { searchProcessos: async () => [], searchContatos: async () => [{ id: 849, nome: 'Rafael Bittencourt Correia Pinto' }] } as never;
+
+  const r = await resolveTarget(client, 'Rafael Bittencourt — medidas cautelares 5001234-56.2025.4.03.6100 (TRF3): revisão');
+  check('an unfiled CNJ falls back to the binding, not to matter-missing',
+    r.kind === 'bound' && (r as any).link.id === 1611, r.kind);
+
+  // And a head with no binding still reports the honest verdict.
+  const other = await resolveTarget(client, 'Outro Cliente — algo 5001234-56.2025.4.03.6101 (TRF3): revisão');
+  check('...while an unbound head still reports matter-missing', other.kind === 'matter-missing', other.kind);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

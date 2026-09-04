@@ -175,6 +175,41 @@ async function resolveBindings(
     }
 
     const hits = await client.searchProcessos(value);
+
+    /*
+     * A bare number is two questions, and answering only one of them misbills.
+     *
+     * "1611" is a record id — matter 1611 is `Proc - 0002468/001`, an Alvorada
+     * incidente. It is also a search term, and searching it returns a completely
+     * different matter (543, an ATLANTICA cautelar) whose text happens to contain
+     * those digits. Taking the search hit because it came back first is how a
+     * client's whole year of hours lands on another client's folder.
+     *
+     * So both readings are tried, and when they disagree the person is asked. The
+     * matter is read rather than assumed, and as an incidente too: `readMatter`
+     * defaults to `processo` and 404s on every sub-matter, which is exactly the
+     * shape ids like 1611 and 2017 have.
+     */
+    const asId = /^\d+$/.test(value) ? Number(value) : null;
+    const byId = asId
+      ? await client.readMatter(asId, 'processo').catch(() => null)
+        ?? await client.readMatter(asId, 'incidente').catch(() => null)
+      : null;
+    const idLabel = byId?.['Pasta'] || byId?.['Titulo'] || '';
+
+    if (byId && hits.length === 1 && hits[0]!.id !== asId) {
+      failures.push(
+        `"${head}": "${value}" reads two ways — as a record id it is matter ${asId} (${idLabel}), and as a ` +
+        `search term it is matter ${hits[0]!.id} (${labelOf(hits[0]!)}). Give the CNJ, or the folder number, ` +
+        'so it names one.',
+      );
+      continue;
+    }
+    if (byId) {
+      bound[head] = { matterId: asId!, label: idLabel || String(asId) };
+      outcomes.push({ head, given: value, via: 'id', ...bound[head]! });
+      continue;
+    }
     if (hits.length === 1) {
       bound[head] = { matterId: hits[0]!.id, label: labelOf(hits[0]!) };
       outcomes.push({ head, given: value, via: 'search', ...bound[head]! });
@@ -186,21 +221,6 @@ async function resolveBindings(
         'so it names no single one — give its CNJ or its record id',
       );
       continue;
-    }
-
-    /*
-     * Nothing found, and it is all digits: the last reading left is a record id.
-     * Read the matter rather than trusting the number, because an id that does not
-     * exist would otherwise be written into the configuration and fail at booking.
-     */
-    if (/^\d+$/.test(value)) {
-      const fields = await client.readMatter(Number(value)).catch(() => null);
-      const pasta = fields?.['Pasta'];
-      if (pasta) {
-        bound[head] = { matterId: Number(value), label: pasta };
-        outcomes.push({ head, given: value, via: 'id', ...bound[head]! });
-        continue;
-      }
     }
     failures.push(`"${head}": "${value}" matches no matter, as a search term or as a record id`);
   }

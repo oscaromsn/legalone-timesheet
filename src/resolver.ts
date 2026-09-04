@@ -28,6 +28,8 @@ export type Resolution =
   | { kind: 'linked'; link: Link; processo: Processo; via: 'cnj' | 'name' }
   | { kind: 'ambiguous'; candidates: Processo[]; reason: string }
   | { kind: 'matter-missing'; contato: Contato; cnj: string | null; clientName: string }
+  /* Decided by configuration rather than found by searching. */
+  | { kind: 'bound'; link: Link; head: string }
   /*
    * The search could not have found this, so its absence is not a finding.
    *
@@ -37,8 +39,6 @@ export type Resolution =
    * clients registered for years. Naming the difference is what lets a plan run before
    * a configuration exists without any of its misses being believed.
    */
-  /* Bound by configuration rather than found by searching. */
-  | { kind: 'bound'; link: Link; head: string }
   | { kind: 'unconfigured'; reason: string; clientName: string | null }
   | { kind: 'escalate'; reason: string; clientName: string | null };
 
@@ -114,6 +114,23 @@ export async function resolveTarget(
   const clientName = rawName ? canonicalName(rawName) : null;
 
   /*
+   * A standing decision about this head, if there is one.
+   *
+   * Consulted in two places below and never before the CNJ: a line carrying its own
+   * case number is being more specific than a rule about its name, so the number
+   * decides while it resolves to something. When it resolves to nothing, the rule is
+   * the better answer — a real week had three lines whose CNJ is not filed in this
+   * tenant at all, and they came back "registered, but the matter is not" about a
+   * client whose matter had been named explicitly.
+   */
+  const bound = rawName ? boundMatters()[rawName] : undefined;
+  const boundResolution = (): Resolution => ({
+    kind: 'bound',
+    link: { kind: 'processo', id: bound!.matterId, text: bound!.label },
+    head: rawName!,
+  });
+
+  /*
    * CNJ first, name second — the inverse of how a person searches.
    * A name search misses any matter whose Cliente is not the party the work is
    * "about": a company's criminal case is filed under its individual defendant,
@@ -127,6 +144,9 @@ export async function resolveTarget(
     if (exact.length > 1) {
       return { kind: 'ambiguous', candidates: exact, reason: `${exact.length} matters share CNJ ${cnj}` };
     }
+    // The number is not filed here. A standing decision about the head outranks
+    // "no matter for this number", which is a fact about the number, not the client.
+    if (bound) return boundResolution();
     // Known number, no matter: the client may still exist, which decides
     // between "register the matter" and "escalate to administrative".
     return clientName
@@ -143,14 +163,7 @@ export async function resolveTarget(
    * and a binding identifies a head, so the more specific of the two wins. The label
    * travels with the link, so nothing has to read the matter back to name it.
    */
-  const bound = boundMatters()[rawName!];
-  if (bound) {
-    return {
-      kind: 'bound',
-      link: { kind: 'processo', id: bound.matterId, text: bound.label },
-      head: rawName!,
-    };
-  }
+  if (bound) return boundResolution();
 
   const byName = await firstNonEmpty(candidateNames(rawName!), (n) => client.searchProcessos(n));
   if (byName.length === 1) {

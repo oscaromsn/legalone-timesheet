@@ -23,7 +23,7 @@ import {
   type EntryTemplate,
   type FirmConfig,
 } from '../config.ts';
-import { discover, discoverAliases, format as formatDiscovery } from '../setup.ts';
+import { discover, discoverAliases, format as formatDiscovery, templateValuesFrom } from '../setup.ts';
 import { context, guard, type ToolResult } from './context.ts';
 import type { Tool } from './tools-read.ts';
 
@@ -126,7 +126,15 @@ const build = (
     });
   }
 
-  const values = { ...args.templateValues };
+  /*
+   * The firm's own records settle four of the seven template values, and until now
+   * nothing carried them across: `propose_config` printed them in its report and
+   * listed them under `templateValuesNeeded` in the same answer, as though unknown.
+   *
+   * Anything the caller passed wins, because that is a person's decision over a
+   * statistic. Shared with `setup --write` so both paths write the same file.
+   */
+  const values = { ...templateValuesFrom(discovery), ...args.templateValues };
   const template: EntryTemplate = entryTemplate().map(([k, v]) => {
     const replacement = values[leafOf(k)];
     return replacement === undefined ? [k, v] : [k, replacement];
@@ -178,8 +186,14 @@ export const configTools: Tool[] = [
         aliasCandidates: aliasScan.candidates,
         aliasRefusals: aliasScan.refused,
         aliasUnpaired: aliasScan.unpaired,
+        /*
+         * Measured against the template this proposal would write, not the one
+         * installed. They differ now that the firm's records fill four of these, and
+         * reporting the installed one listed values as needed in the same breath as
+         * the report printed them.
+         */
         templateValuesNeeded: TEMPLATE_LEAVES.filter(
-          (leaf) => !args.templateValues?.[leaf] && entryTemplate().some(([k, v]) => leafOf(k) === leaf && /^<.*>$/.test(v)),
+          (leaf) => built.template.some(([k, v]) => leafOf(k) === leaf && /^<.*>$/.test(v)),
         ),
         report: formatDiscovery(discovery),
         ...(complete
@@ -235,6 +249,27 @@ export const configTools: Tool[] = [
           ok: false,
           error: `the tenant no longer settles: ${built.unresolved.join(', ')}`,
           hint: 'The records moved since the proposal. Call propose_config again and show the person what changed.',
+        };
+      }
+
+      /*
+       * A template with holes in it is not a configuration, and writing one was worse
+       * than refusing: apply_config returned ok, reported `configured: false` in a
+       * field beside it, and left seven `<placeholder>` strings on disk that the next
+       * booking would POST — for a 405 about int binding, naming neither the file nor
+       * the field. Refusing here keeps "it applied" and "it works" from diverging.
+       */
+      const holes = TEMPLATE_LEAVES.filter(
+        (leaf) => built.template.some(([k, v]) => leafOf(k) === leaf && /^<.*>$/.test(v)),
+      );
+      if (holes.length > 0) {
+        return {
+          ok: false,
+          error: `the entry template would still be unset: ${holes.join(', ')}`,
+          hint:
+            'Nothing was written. These come from the firm\'s own records when they settle them; where they do ' +
+            'not, pass them in templateValues and call propose_config again for a token that covers them. Do ' +
+            'not invent values — a placeholder posted to Legal One fails with a message naming neither.',
         };
       }
 

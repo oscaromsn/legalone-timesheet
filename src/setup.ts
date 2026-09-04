@@ -493,3 +493,32 @@ export async function verifyEntry(
   };
 }
 
+/**
+ * The template values the firm's own records settle, keyed by template leaf.
+ *
+ * `discover` has always found these four — they are stamped on every entry this user
+ * has filed — but nothing carried them into the template, so both paths that write a
+ * configuration reported them in their evidence and left them unset in the file. The
+ * conversational path then listed them as still needed in the same breath as printing
+ * them, and the terminal path never wrote `template.json` at all, which is why a cold
+ * `setup --write` posted `<your-user-id>` and took a 405.
+ *
+ * Same evidence rule the ids use: one candidate, at least two records. A statistic
+ * over one entry is not a finding.
+ */
+export const templateValuesFrom = (discovery: Discovery): Record<string, string> => {
+  const mapping: Array<{ finding: string; id: string; text?: string }> = [
+    { finding: 'executanteId', id: 'ExecutanteId', text: 'ExecutanteText' },
+    { finding: 'areaId', id: 'AreaId', text: 'AreaText' },
+    { finding: 'tabelaValoresId', id: 'TabelaValoresId', text: 'TabelaValoresText' },
+    { finding: 'valorHoraCobranca', id: 'ValorHoraCobranca' },
+  ];
+  const values: Record<string, string> = {};
+  for (const { finding: key, id, text } of mapping) {
+    const found = discovery.findings.find((f) => f.key === key);
+    if (!found?.best || found.candidates.length > 1 || found.sampled < 2) continue;
+    values[id] = found.best.value;
+    if (text && found.best.text) values[text] = found.best.text;
+  }
+  return values;
+};

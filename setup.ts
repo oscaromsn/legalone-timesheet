@@ -15,7 +15,7 @@ import { createInterface } from 'node:readline/promises';
 import { LegalOneTimesheet, type Link } from './src/client.ts';
 import { browserSession, LoginRequiredError } from './src/session.ts';
 import { diagnose, format as formatDiagnosis } from './src/doctor.ts';
-import { discover, format as formatDiscovery, verifyEntry, type Discovery } from './src/setup.ts';
+import { discover, format as formatDiscovery, templateValuesFrom, verifyEntry, type Discovery } from './src/setup.ts';
 import { generateTemplate, format as formatTemplate } from './src/template.ts';
 
 import { configDir, entryTemplate, firmConfig, templatePath, writeConfig } from './src/config.ts';
@@ -333,7 +333,31 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const files = writeConfig({ firm: merged });
+  /*
+   * The template is written here too, and used not to be.
+   *
+   * `writeConfig` was called with `firm` alone, so on a machine with no `config/` this
+   * path wrote `aliases.json` and left `template.json` absent — the reader then fell
+   * back to `template.example.json` and the probe below posted `<your-user-id>`, for a
+   * 405 about int binding that names neither the file nor the field. A first run that
+   * cannot survive its own proof is not a setup path.
+   *
+   * Same seeding the conversational path uses, so the two produce the same file.
+   */
+  const template = entryTemplate().map(([k, v]) => {
+    const found = templateValuesFrom(discovery)[k.split('.').pop() ?? k];
+    return (found === undefined ? [k, v] : [k, found]) as [string, string];
+  });
+  const holes = template.filter(([, v]) => /^<.*>$/.test(v)).map(([k]) => k.split('.').pop());
+  if (holes.length > 0) {
+    say(`Refusing to write: the entry template would still be unset (${holes.join(', ')}).`);
+    say('The firm\'s records did not settle these, and a placeholder posted to Legal One fails with a message');
+    say('naming neither the file nor the field. Capture a create form per src/template.ts, or configure from');
+    say('the conversation, where propose_config can take them as templateValues.');
+    return 1;
+  }
+
+  const files = writeConfig({ firm: merged, template });
   say(`wrote ${files.join(', ')}${kept.length > 0 ? ` (kept ${kept.join(', ')})` : ''}`);
   say('  aliases were not touched: a wrong one books hours against the wrong client, and nothing surfaces it.');
   if (held.length > 0) {

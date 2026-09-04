@@ -16,8 +16,9 @@
  * module, so that file is copied rather than compiled and would otherwise be missing
  * only at run time, on someone else's machine.
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -92,16 +93,25 @@ writeFileSync(join(stage, 'manifest.json'), `${JSON.stringify(manifest, null, 2)
  * from the source they test. So the bundle is asked what it exposes, and the
  * answer is compared with the source rather than with a number written here.
  */
-const { allTools } = await import('./src/mcp/server.ts');
-const expected = allTools.map((t) => t.name).sort();
+const { allTools, GATED_ON_CONFIG } = await import('./src/mcp/server.ts');
+const everything = allTools.map((t) => t.name).sort();
+const withoutBooking = everything.filter((n) => !GATED_ON_CONFIG.has(n));
 
-say('proving the bundle speaks the protocol…');
-await new Promise((resolve, reject) => {
+/*
+ * Asks the built bundle what it exposes, under a configuration this decides.
+ *
+ * It used to hand the child only HOME, which meant it read whoever built it — so
+ * the answer depended on whether that machine happened to be configured, and the
+ * gate silently proved a different thing on a developer's laptop than in a clean
+ * checkout. The configuration is supplied here instead, and asked for twice,
+ * because the tool list is deliberately state-dependent now.
+ */
+const surfaceUnder = (configDir, label) => new Promise((resolve, reject) => {
   // `process.execPath`, not a bare `node`: finding the runtime is Claude Desktop's
   // job, and what this proves is the other half — that the server itself needs
   // nothing from a shell PATH, which is what a GUI application does not provide.
   const child = spawn(process.execPath, [join(stage, 'server', 'mcp.js')], {
-    env: { HOME: process.env.HOME, PATH: '/usr/bin:/bin' },
+    env: { HOME: process.env.HOME, PATH: '/usr/bin:/bin', LEGALONE_CONFIG_DIR: configDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let out = '';
@@ -122,19 +132,46 @@ await new Promise((resolve, reject) => {
         if (msg.id === 3) prompts = msg.result?.prompts?.length ?? 0;
       } catch { bad += 1; }
     }
-    if (bad > 0) return reject(new Error(`${bad} non-JSON line(s) on stdout — the protocol stream is corrupt`));
-    const missing = expected.filter((n) => !tools.includes(n));
-    const extra = tools.filter((n) => !expected.includes(n));
-    if (missing.length || extra.length) {
-      return reject(new Error(
-        `the bundle does not expose what the source does — missing: ${missing.join(', ') || 'none'}; ` +
-        `unexpected: ${extra.join(', ') || 'none'}`,
-      ));
-    }
-    say(`  ${tools.length} tools, ${prompts} prompts, protocol clean, surface matches the source`);
-    resolve();
+    if (bad > 0) return reject(new Error(`${label}: ${bad} non-JSON line(s) on stdout — the protocol stream is corrupt`));
+    resolve({ tools, prompts });
   }, 6000);
 });
+
+const agrees = (label, tools, want) => {
+  const missing = want.filter((n) => !tools.includes(n));
+  const extra = tools.filter((n) => !want.includes(n));
+  if (missing.length || extra.length) {
+    throw new Error(
+      `${label}: the bundle does not expose what the source does — missing: ${missing.join(', ') || 'none'}; ` +
+      `unexpected: ${extra.join(', ') || 'none'}`,
+    );
+  }
+};
+
+say('proving the bundle speaks the protocol…');
+const configured = mkdtempSync(join(tmpdir(), 'legalone-build-configured-'));
+writeFileSync(join(configured, 'aliases.json'), JSON.stringify({
+  aliases: {}, internal: { prefixes: [] }, titleFormat: null,
+  defaults: {
+    escritorioOrigemId: '1', escritorioOrigemText: 'x', escritorioResponsavelId: '1',
+    escritorioResponsavelText: 'x', responsavelId: '2', responsavelText: 'x',
+    responsavelPosicaoId: '3', responsavelPosicaoText: 'x', naturezaId: '4', naturezaText: 'x',
+    contatoEscritorioId: '5', contatoEscritorioText: 'x',
+  },
+}));
+const warm = await surfaceUnder(configured, 'configured');
+agrees('configured', warm.tools, everything);
+
+/*
+ * And the cold surface, because withholding a tool is a shipped behaviour of the
+ * artefact rather than a detail of the source: an agent that can see log_entries on
+ * an installation that cannot book will plan a week it cannot file.
+ */
+const cold = await surfaceUnder(mkdtempSync(join(tmpdir(), 'legalone-build-cold-')), 'unconfigured');
+agrees('unconfigured', cold.tools, withoutBooking);
+
+say(`  ${warm.tools.length} tools, ${warm.prompts} prompts, protocol clean, surface matches the source`);
+say(`  unconfigured it offers ${cold.tools.length}, withholding ${[...GATED_ON_CONFIG].join(', ')}`);
 
 say('packing…');
 const bundle = join(root, 'build', `${manifest.name}-${manifest.version}.mcpb`);

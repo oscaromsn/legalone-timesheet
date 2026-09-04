@@ -22,23 +22,49 @@ import { firmConfig } from './config.ts';
  * list rather than an error when the id space differs, which is exactly the kind of
  * nothing that reads as "no matches".
  */
+/**
+ * Asked of every lookup, because the default is a page and reads like a catalogue.
+ *
+ * `posicao` carried `pageSize` from the start and `acao` and `orgao` did not, so both
+ * came back with 25 rows — of 121 ações and 107 órgãos on this tenant. Nothing said
+ * so. A person was shown a fifth of the list as though it were the whole of it, and
+ * `validateAnswers` refused every id outside that fifth as "not one of the ids this
+ * tenant offered" — including ids the tenant had just returned from a filtered
+ * lookup. The wrong half of that is the first: an option list nobody can see past
+ * gets a matter filed under whatever was on page one.
+ */
+export const LOOKUP_PAGE_SIZE = 500;
+
 export const MATTER_LOOKUPS = {
   posicao: {
     path: '/processos/Processos/LookupPosicaoEnvolvido',
-    extra: { situacaoEnvolvido: '0', tipoProcesso: '0', pageSize: '100' } as Record<string, string>,
+    extra: { situacaoEnvolvido: '0', tipoProcesso: '0', pageSize: String(LOOKUP_PAGE_SIZE) } as Record<string, string>,
     fills: 'Cliente.PosicaoEnvolvidoId',
   },
   acao: {
     path: '/config/AcoesRecursosIncidentesProcesso/LookupTipoAcaoRecInc',
-    extra: { idTipo: '0' } as Record<string, string>,
+    extra: { idTipo: '0', pageSize: String(LOOKUP_PAGE_SIZE) } as Record<string, string>,
     fills: 'TipoAcaoId',
   },
   orgao: {
     path: '/config/orgaos/LookupOrgao',
-    extra: { tipo: '0' } as Record<string, string>,
+    extra: { tipo: '0', pageSize: String(LOOKUP_PAGE_SIZE) } as Record<string, string>,
     fills: 'OrgaoId',
   },
 } as const;
+
+/**
+ * Says so when a list is still a page.
+ *
+ * A larger `pageSize` moves the cliff, it does not remove it. A tenant with more than
+ * `LOOKUP_PAGE_SIZE` of anything would truncate again, in silence, exactly as before —
+ * so the one case that can detect it says it out loud instead.
+ */
+const truncated = (options: unknown[]): string | undefined =>
+  options.length >= LOOKUP_PAGE_SIZE
+    ? `${options.length} returned, which is the page limit — this may be a page rather than the whole list; ` +
+      'search by term before choosing'
+    : undefined;
 
 /** Justiça, from the CNJ's `J` digit. Fixed by the CNJ standard, not by this firm. */
 const JUSTICA_BY_DIGIT: Record<string, string> = {
@@ -169,11 +195,13 @@ export async function proposeMatter(
    * Investigado and Interessado on the same client, it changes what the record
    * means, and nothing in the timesheet line reliably implies it.
    */
+  const posicaoOptions = (await client.lookup(MATTER_LOOKUPS.posicao.path, undefined, MATTER_LOOKUPS.posicao.extra))
+    .map((r) => ({ id: String(r['Id']), value: String(r['Value']) }));
   choices.push({
     field: 'Cliente.PosicaoEnvolvido',
     label: 'Posição do cliente principal',
-    options: (await client.lookup(MATTER_LOOKUPS.posicao.path, undefined, MATTER_LOOKUPS.posicao.extra))
-      .map((r) => ({ id: String(r['Id']), value: String(r['Value']) })),
+    options: posicaoOptions,
+    note: truncated(posicaoOptions),
   });
 
   const acaoOptions = await client.lookup(MATTER_LOOKUPS.acao.path, hints.acao, MATTER_LOOKUPS.acao.extra);
@@ -183,7 +211,8 @@ export async function proposeMatter(
     options: acaoOptions.map((r) => ({ id: String(r['Id']), value: String(r['Value']) })),
     // "Inquérito" alone returns four near-identical entries; picking the first files
     // the matter under the wrong action type with no visible symptom.
-    note: acaoOptions.length > 1 ? `${acaoOptions.length} candidates — pick deliberately` : undefined,
+    note: truncated(acaoOptions)
+      ?? (acaoOptions.length > 1 ? `${acaoOptions.length} candidates — pick deliberately` : undefined),
   });
 
   const orgaoOptions = await client.lookup(MATTER_LOOKUPS.orgao.path, hints.orgao, MATTER_LOOKUPS.orgao.extra);
@@ -191,9 +220,10 @@ export async function proposeMatter(
     field: 'Orgao',
     label: 'Órgão',
     options: orgaoOptions.map((r) => ({ id: String(r['Id']), value: String(r['Value']) })),
-    note: parts?.justice
-      ? `CNJ says ${parts.justice} (tribunal ${parts.tribunal}, unidade ${parts.unit})`
-      : undefined,
+    note: [
+      parts?.justice ? `CNJ says ${parts.justice} (tribunal ${parts.tribunal}, unidade ${parts.unit})` : null,
+      truncated(orgaoOptions) ?? null,
+    ].filter(Boolean).join('; ') || undefined,
   });
   if (orgaoOptions.length === 0) mustAsk.push('Órgão (no candidates matched — search by another term)');
 

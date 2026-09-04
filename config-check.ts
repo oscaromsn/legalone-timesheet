@@ -464,5 +464,40 @@ const at = async (dir: string) => {
     bare.failures.length === 1 && Object.keys(bare.bound).length === 0, JSON.stringify(bare.outcomes));
 }
 
+{
+  /*
+   * A lookup page is not a catalogue.
+   *
+   * `posicao` asked for a pageSize and `acao` and `orgao` did not, so both came back
+   * with 25 rows — of 121 ações and 107 órgãos on the tenant this was found on.
+   * Nothing said so. The proposal offered a fifth of the list as though it were all
+   * of it, and `validateAnswers` refused every id outside that fifth as "not one of
+   * the ids this tenant offered" — including ids the tenant had just returned from a
+   * filtered lookup of its own. Filing a matter under whatever was on page one is
+   * permanent.
+   */
+  const { MATTER_LOOKUPS, LOOKUP_PAGE_SIZE, proposeMatter } = await import('./src/interview.ts');
+
+  for (const [name, l] of Object.entries(MATTER_LOOKUPS)) {
+    check(`the ${name} lookup asks for a page size`, l.extra['pageSize'] === String(LOOKUP_PAGE_SIZE),
+      String(l.extra['pageSize']));
+  }
+
+  const rowsOf = (n: number) => Array.from({ length: n }, (_, i) => ({ Id: i + 1, Value: `opção ${i + 1}` }));
+  const contato = { id: 1, nome: 'Alguém', documento: null, columns: {} };
+
+  const roomy = await proposeMatter({ lookup: async () => rowsOf(30) } as never, contato, null);
+  check('a list shorter than the page limit is not called a page',
+    roomy.choices.every((c) => !(c.note ?? '').includes('page limit')));
+  check('...and all of it is offered', roomy.choices.every((c) => c.options.length === 30));
+
+  const full = await proposeMatter({ lookup: async () => rowsOf(LOOKUP_PAGE_SIZE) } as never, contato, null);
+  check('a list exactly at the limit says it may be a page rather than the whole list',
+    full.choices.every((c) => (c.note ?? '').includes('page limit')),
+    full.choices.map((c) => c.note ?? '(none)').join(' | '));
+  check('...on the órgão too, which already had a note of its own to keep',
+    (full.choices.find((c) => c.field === 'Orgao')?.note ?? '').includes('page limit'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

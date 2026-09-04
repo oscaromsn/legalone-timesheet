@@ -1,5 +1,5 @@
 import type { Contato, LegalOneTimesheet } from './client.ts';
-import config from './aliases.json' with { type: 'json' };
+import { firmConfig } from './config.ts';
 
 /**
  * Turns a `matter-missing` resolution into the smallest set of questions a lawyer
@@ -11,7 +11,6 @@ import config from './aliases.json' with { type: 'json' };
  * the wrong client. So each field is sorted into derived / choose-one / must-ask.
  */
 
-const defaults = config.defaults;
 
 /**
  * The lookup endpoints the interview depends on, and the filters it sends them.
@@ -84,7 +83,7 @@ export const parseCnj = (cnj: string): CnjParts | null => {
  * and gets no suggestion, which is better than getting someone else's.
  */
 export const titleFor = (cnj: string, shortName: string, description: string): string | null => {
-  const format = config.titleFormat;
+  const format = firmConfig().titleFormat;
   if (!format) return null;
   const parts = parseCnj(cnj);
   if (!parts) return null;
@@ -131,6 +130,9 @@ export async function proposeMatter(
   cnj: string | null,
   hints: { acao?: string; orgao?: string; shortName?: string; titleDescription?: string } = {},
 ): Promise<MatterProposal> {
+  // Read here, not at import: an agent may have written the configuration during
+  // this very conversation, and a captured constant would propose the old ids.
+  const defaults = firmConfig().defaults;
   const parts = cnj ? parseCnj(cnj) : null;
 
   const derived: Record<string, string> = {

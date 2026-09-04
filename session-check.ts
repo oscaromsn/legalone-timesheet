@@ -12,6 +12,39 @@
  * Unlike verify.ts this needs no fixtures — it stubs fetch — so it runs anywhere.
  * Add a case here whenever a new fetch site is added to the client.
  */
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+/*
+ * A synthetic configuration, so this gate stays runnable on a fresh clone.
+ *
+ * `planEntries` now refuses to resolve against an unconfigured installation — an
+ * absent alias table used to produce confident wrong answers rather than errors. That
+ * guard is correct and it means this file, which tests expiry detection and has
+ * nothing to say about how a firm is configured, has to bring a configuration of its
+ * own. Written to a temp directory rather than committed: a real one names clients.
+ */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'legalone-gate-'));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'aliases.json'), JSON.stringify({
+    aliases: {},
+    internal: { prefixes: ['Escritório'] },
+    defaults: {
+      escritorioOrigemId: '1', escritorioOrigemText: 'Example firm',
+      escritorioResponsavelId: '1', escritorioResponsavelText: 'Example firm',
+      responsavelId: '2', responsavelText: 'Example lawyer',
+      responsavelPosicaoId: '3', responsavelPosicaoText: 'Responsável',
+      naturezaId: '4', naturezaText: 'Example natureza',
+      contatoEscritorioId: '5', contatoEscritorioText: 'Example firm',
+    },
+    titleFormat: null,
+  }));
+  writeFileSync(join(dir, 'template.json'), JSON.stringify([['SituacaoId', '0']]));
+  process.env['LEGALONE_CONFIG_DIR'] = dir;
+}
+
 import { LegalOneTimesheet, SessionExpiredError, type Link } from './src/client.ts';
 import { withRenewal } from './src/auth.ts';
 import { portTimeout } from './src/session.ts';

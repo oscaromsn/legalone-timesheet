@@ -3,8 +3,9 @@ node_modules/
 # Credentials. The cookie in .env is the entire credential for the account.
 .env
 
-# Tenant-bound configuration, copied from the .example files at setup and then
-# filled with real names, ids and rates. Never committed:
+# Tenant-bound configuration. It lives in the OS application directory now, not
+# here — but these two paths were its home for a while, and a straggler is client
+# names plus a billing rate, so they stay ignored:
 #   aliases.json   client names — attorney-client information
 #   template.json  a captured snapshot of *your* form: your user id, your rate
 src/aliases.json

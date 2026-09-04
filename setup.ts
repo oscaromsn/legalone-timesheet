@@ -10,7 +10,7 @@
  * answered when this runs inside an agent, and "it asked and nobody was there" is a
  * bad reason to either stall or proceed.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { LegalOneTimesheet, type Link } from './src/client.ts';
 import { browserSession, LoginRequiredError } from './src/session.ts';
@@ -18,9 +18,7 @@ import { diagnose, format as formatDiagnosis } from './src/doctor.ts';
 import { discover, format as formatDiscovery, type Discovery } from './src/setup.ts';
 import { generateTemplate, format as formatTemplate } from './src/template.ts';
 
-const ALIASES = new URL('src/aliases.json', import.meta.url);
-const TEMPLATE = new URL('src/template.json', import.meta.url);
-const EXAMPLE = new URL('src/aliases.example.json', import.meta.url);
+import { configDir, entryTemplate, firmConfig, templatePath, writeConfig } from './src/config.ts';
 
 const write = process.argv.includes('--write');
 const say = (s = '') => console.log(s);
@@ -89,7 +87,14 @@ function mergeAliases(discovery: Discovery, answered: Record<string, string> = {
   kept: string[];
   adoptions: Adoption[];
 } {
-  const base = JSON.parse(readFileSync(existsSync(ALIASES) ? ALIASES : EXAMPLE, 'utf8')) as Record<string, unknown>;
+  /*
+   * The base is what is configured, and when nothing is, it is empty — never the
+   * example. Basing on the example is how three fictional aliases (`Acme`,
+   * `J. Ribeiro`, `Fintech Co`) used to be written into a live configuration and
+   * reported as `kept 3 aliases`, after which a real client name was rewritten to a
+   * company that does not exist and the search reported it unregistered.
+   */
+  const base = structuredClone(firmConfig()) as unknown as Record<string, unknown>;
   const kept: string[] = [];
   const aliases = (base['aliases'] ?? {}) as Record<string, string>;
   if (Object.keys(aliases).length > 0) kept.push(`${Object.keys(aliases).length} aliases`);
@@ -268,8 +273,8 @@ async function main(): Promise<number> {
   say(formatDiscovery(discovery));
   say();
 
-  const installed = existsSync(TEMPLATE)
-    ? (JSON.parse(readFileSync(TEMPLATE, 'utf8')) as Array<[string, string]>)
+  const installed = existsSync(templatePath())
+    ? entryTemplate()
     : [];
   say('— comparing the entry form against the installed template —');
   const candidate = await generateTemplate(client, installed);
@@ -327,8 +332,8 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  writeFileSync(ALIASES, `${JSON.stringify(merged, null, 2)}\n`);
-  say(`wrote src/aliases.json${kept.length > 0 ? ` (kept ${kept.join(', ')})` : ''}`);
+  const files = writeConfig({ firm: merged });
+  say(`wrote ${files.join(', ')}${kept.length > 0 ? ` (kept ${kept.join(', ')})` : ''}`);
   say('  aliases were not touched: a wrong one books hours against the wrong client, and nothing surfaces it.');
   if (held.length > 0) {
     say(`  ${held.length} value(s) left as they were, because the records contest them: ${held.map((a) => a.key).join(', ')}`);
@@ -345,7 +350,7 @@ async function main(): Promise<number> {
   say();
   say('Done. Run again to re-check, or run the gates:');
   say('  bun run session-check.ts && bun run execute-check.ts');
-  say('This process still holds the previous configuration in memory — the new values apply on the next run.');
+  say(`Configuration lives in ${configDir()}, outside this clone — deleting the repository does not delete it.`);
   return 0;
 }
 

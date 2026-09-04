@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import firm from './aliases.json' with { type: 'json' };
-import template from './template.json' with { type: 'json' };
+import { entryTemplate, firmConfig } from './config.ts';
 
 /**
  * Legal One (NovaJus) timesheet client.
@@ -92,15 +91,16 @@ export type Link = z.input<typeof LinkSchema>;
  * nor the fact that setup was never run. Resolve it where it is used, and say so.
  */
 export const contatoEscritorio = (): Link => {
-  const raw = firm.defaults.contatoEscritorioId;
+  const { defaults } = firmConfig();
+  const raw = defaults.contatoEscritorioId;
   const id = Number(raw);
   if (!Number.isInteger(id) || id <= 0) {
     throw new Error(
       `aliases.json: defaults.contatoEscritorioId is ${JSON.stringify(raw)}, which is not a record id. ` +
-        'Copy src/aliases.example.json to src/aliases.json and fill it in — see the README.',
+        'This installation has not been configured — run configuration before booking anything.',
     );
   }
-  return { kind: 'contato', id, text: firm.defaults.contatoEscritorioText };
+  return { kind: 'contato', id, text: defaults.contatoEscritorioText };
 };
 
 /** Builds the link for a matter returned by `resolveProcesso`/`searchProcessos`. */
@@ -166,7 +166,7 @@ const toDuration = (seconds: number): string => {
 const bindTemplate = (): Array<[string, string]> => {
   const ids = { VINC: crypto.randomUUID(), EXEC: crypto.randomUUID(), CLAS: crypto.randomUUID() };
   const fill = (s: string) => s.replace(/\{(VINC|EXEC|CLAS)\}/g, (_, k: keyof typeof ids) => ids[k]);
-  return (template as Array<[string, string]>).map(([k, v]) => [fill(k), fill(v)]);
+  return entryTemplate().map(([k, v]) => [fill(k), fill(v)]);
 };
 
 const rowFields = (

@@ -10,6 +10,17 @@
  * real matters, contacts and rates. See "Maintenance" in the README for how to
  * capture one.
  */
+/*
+ * The gate runs against the configuration the fixtures were captured under.
+ *
+ * A captured request carries the template that produced it — the executante, the
+ * área, the rate table. Diffing today's payload against yesterday's capture only
+ * means something if both were built from the same configuration, so the baseline is
+ * pinned beside the fixtures rather than read from whatever this machine happens to
+ * be configured with.
+ */
+process.env['LEGALONE_CONFIG_DIR'] = new URL('fixtures/config/', import.meta.url).pathname;
+
 import { readdirSync, readFileSync } from 'node:fs';
 import { LegalOneTimesheet, type Link } from './src/client.ts';
 

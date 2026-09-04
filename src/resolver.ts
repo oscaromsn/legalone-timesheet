@@ -6,7 +6,7 @@ import {
   type LegalOneTimesheet,
   type Processo,
 } from './client.ts';
-import config from './aliases.json' with { type: 'json' };
+import { assertConfigured, firmConfig } from './config.ts';
 
 /**
  * Decides what a timesheet line should be booked against.
@@ -30,8 +30,15 @@ export type Resolution =
   | { kind: 'matter-missing'; contato: Contato; cnj: string | null; clientName: string }
   | { kind: 'escalate'; reason: string; clientName: string | null };
 
-const aliases: Record<string, string> = config.aliases;
-const internalPrefixes: string[] = config.internal.prefixes;
+/*
+ * Read per call, not captured at import. The configuration is a file a person edits
+ * — through setup, or through an agent that just wrote one — and a module-level
+ * constant would serve the table that existed when the process started. That is not
+ * a stale cache: it is hours booked against the previous alias target, with both the
+ * write and the report succeeding.
+ */
+const aliases = (): Record<string, string> => firmConfig().aliases;
+const internalPrefixes = (): string[] => firmConfig().internal.prefixes;
 
 /** The client name a line is about: the segment before the first em dash or colon. */
 export const clientNameOf = (description: string): string | null => {
@@ -49,20 +56,30 @@ export const clientNameOf = (description: string): string | null => {
  */
 export const candidateNames = (head: string): string[] => {
   const forms = [head, head.split('/')[0]!.trim(), head.split('(')[0]!.trim()];
-  const withAliases = forms.flatMap((form) => (aliases[form] ? [aliases[form]!, form] : [form]));
+  const table = aliases();
+  const withAliases = forms.flatMap((form) => (table[form] ? [table[form]!, form] : [form]));
   return [...new Set(withAliases.filter((f) => f.length > 1))];
 };
 
 /** Applies the alias table. Registered names drift from the ones timesheets use. */
-export const canonicalName = (name: string): string => aliases[name] ?? name;
+export const canonicalName = (name: string): string => aliases()[name] ?? name;
 
 export const isInternal = (description: string): boolean =>
-  internalPrefixes.some((prefix) => description.trimStart().startsWith(prefix));
+  internalPrefixes().some((prefix) => description.trimStart().startsWith(prefix));
 
 export async function resolveTarget(
   client: LegalOneTimesheet,
   description: string,
 ): Promise<Resolution> {
+  /*
+   * An unconfigured installation does not fail here, it answers wrongly. With no
+   * alias table every name is passed through unchanged, which is survivable; with
+   * somebody else's, a real client name is rewritten and the search misses, and the
+   * line comes back `escalate` — "not registered, administrative has to create it"
+   * — about a client that has been registered for years. Refusing is the only
+   * outcome that cannot be mistaken for an answer.
+   */
+  assertConfigured();
   if (isInternal(description)) return { kind: 'internal', link: contatoEscritorio() };
 
   const cnj = description.match(CNJ_PATTERN)?.[0] ?? null;

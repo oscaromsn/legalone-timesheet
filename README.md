@@ -209,7 +209,7 @@ chmod 700 ~/Library/Application\ Support/legalone-timesheet/browser
 Deleting it revokes everything and costs one sign-in.
 
 **Three kinds of file are never committed**, and `.gitignore` enforces it: the
-configuration (`src/aliases.json`, `src/template.json`) because it carries client
+configuration, which lives outside the clone entirely because it carries client
 names, internal ids and your billing rate; captured traffic under `fixtures/` because
 a captured request is client data plus a live credential; and any run scripts, because
 they name real clients.
@@ -261,7 +261,6 @@ is, and it is the thing to preserve if you change anything here.
 ## Layers
 
 ```
-seed.mjs            install  — puts the two config files in place, once, if missing.
 setup.ts            command  — sign in, check the tenant, configure, prove it.
 mcp.ts              command  — the MCP server, over stdio.
 src/mcp/            surface  — eighteen tools wrapping the library. No new rules.
@@ -277,8 +276,9 @@ src/setup.ts        setup    — reads a firm's own records to propose its confi
 src/template.ts     setup    — proposes a create template from the tenant's form.
 src/export.ts       data     — pulls the timesheet out as an analysable table.
 src/xlsx.ts         mechanism — just enough of the xlsx format to read a report.
-src/aliases.json    config   — name drift and firm constants.
-src/template.json   config   — invariant create fields, per tenant.
+src/config.ts       config   — the firm's configuration, loaded at runtime.
+config/aliases.json          — name drift and firm constants, outside the clone.
+config/template.json         — invariant create fields, per tenant.
 verify.ts           gate     — regenerates captured payloads and diffs them.
 mcp-check.ts        gate     — the agent-facing contract, offline.
 session-check.ts    gate     — expiry detection and renewal, offline.
@@ -366,7 +366,7 @@ as data.
 
 ### Configure for your firm
 
-`src/aliases.json` has two halves:
+The firm configuration has two halves:
 
 - **`aliases`** — the name a timesheet line uses → the name Legal One files it under.
   `Acme → ACME PARTICIPAÇÕES LTDA`; `Fintech Co → Carlos Andrade Lima` (that one

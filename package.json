@@ -4,7 +4,6 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "scripts": {
-    "postinstall": "node seed.mjs",
     "typecheck": "tsc --noEmit",
     "setup": "bun setup.ts"
   },

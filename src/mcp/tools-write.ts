@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { idempotentWrite, read, type Renew } from '../auth.ts';
-import { clientNameOf, planEntries, type PlannedEntry } from '../resolver.ts';
+import { clientNameOf, nearBinding, planEntries, type PlannedEntry } from '../resolver.ts';
 import { descriptionSent, executePlan, entryKey, toMinutes, format as formatRun, type Decision } from '../execute.ts';
 import { proposeMatter, validateAnswers, createFromProposal } from '../interview.ts';
 import { diagnose, format as formatDoctor } from '../doctor.ts';
@@ -177,9 +177,10 @@ export const writeTools: Tool[] = [
         const r = p.resolution;
         if (r.kind === 'linked' || r.kind === 'internal' || r.kind === 'bound') continue;
         const head = clientNameOf(p.description) ?? '(no client name)';
-        const reason = r.kind === 'matter-missing'
+        const near = nearBinding(clientNameOf(p.description));
+        const reason = (r.kind === 'matter-missing'
           ? `"${r.clientName}" is registered, the matter is not`
-          : r.reason;
+          : r.reason) + (near ? ` — ${near}` : '');
         const seen = unresolved.get(head) ?? { minutes: 0, lines: 0, state: r.kind, reason };
         seen.minutes += toMinutes(p.endTime) - toMinutes(p.startTime);
         seen.lines += 1;
@@ -189,18 +190,24 @@ export const writeTools: Tool[] = [
       return {
         ok: true,
         configVersion: configVersion(),
-        entries: planned.map((p) => ({
-          key: entryKey(p.date, p.startTime, p.endTime),
-          description: p.description.slice(0, 120),
-          state: p.resolution.kind,
-          detail: p.resolution.kind === 'linked' ? p.resolution.processo.pasta
-            : p.resolution.kind === 'bound'
-              ? `bound by configuration to ${p.resolution.link.id} — ${p.resolution.link.text}`
-            : p.resolution.kind === 'ambiguous' || p.resolution.kind === 'escalate'
-              || p.resolution.kind === 'unconfigured' ? p.resolution.reason
-            : p.resolution.kind === 'matter-missing' ? `"${p.resolution.clientName}" is registered, the matter is not`
-            : 'firm-internal',
-        })),
+        entries: planned.map((p) => {
+          const r = p.resolution;
+          const decided = r.kind === 'linked' || r.kind === 'bound' || r.kind === 'internal';
+          // Only on a line nobody placed: a decided line has nothing to confirm.
+          const near = decided ? null : nearBinding(clientNameOf(p.description));
+          const detail =
+            r.kind === 'linked' ? r.processo.pasta
+            : r.kind === 'bound' ? `bound by configuration to ${r.link.id} — ${r.link.text}`
+            : r.kind === 'ambiguous' || r.kind === 'escalate' || r.kind === 'unconfigured' ? r.reason
+            : r.kind === 'matter-missing' ? `"${r.clientName}" is registered, the matter is not`
+            : 'firm-internal';
+          return {
+            key: entryKey(p.date, p.startTime, p.endTime),
+            description: p.description.slice(0, 120),
+            state: r.kind,
+            detail: `${detail}${near ? ` — ${near}` : ''}`,
+          };
+        }),
         unresolved: [...unresolved.entries()]
           .sort(([, a], [, b]) => b.minutes - a.minutes)
           .map(([head, u]) => ({

@@ -323,5 +323,67 @@ const at = async (dir: string) => {
   check('...while an unbound head still reports matter-missing', other.kind === 'matter-missing', other.kind);
 }
 
+{
+  /*
+   * A decision that stopped applying has to say so.
+   *
+   * Found by booking the following week. The binding was keyed "Rafael Bittencourt";
+   * that week's timesheet wrote "Rafael Bittencourt Correia Pinto". The binding
+   * did not fire — correctly, since only the person can say two names are one client —
+   * and the three lines came back "registered, but the matter is not", which reads
+   * exactly like a client nobody has ever decided anything about. Held is the right
+   * outcome; held in silence is not.
+   */
+  const { reloadConfig: reload } = await import('./src/config.ts');
+  const { resolveTarget, nearBinding } = await import('./src/resolver.ts');
+  const { executePlan } = await import('./src/execute.ts');
+
+  const dir = scratch();
+  writeFileSync(join(dir, 'aliases.json'), JSON.stringify({
+    ...full(),
+    matters: { 'Rafael Bittencourt': { matterId: 1611, label: 'Proc - 0002468/001' } },
+  }));
+  writeFileSync(join(dir, 'template.json'), JSON.stringify([['SituacaoId', '0']]));
+  process.env['LEGALONE_CONFIG_DIR'] = dir;
+  reload();
+
+  check('a longer form of a bound head is noticed',
+    (nearBinding('Rafael Bittencourt Correia Pinto') ?? '').includes('1611'));
+  check('...and says it was not applied, because only the person can say so',
+    (nearBinding('Rafael Bittencourt Correia Pinto') ?? '').includes('NOT applied'));
+  check('a shorter form is noticed too — the drift runs both ways',
+    nearBinding('Rafael Bittencourt Correia') !== null);
+  check('the bound head itself is not near itself', nearBinding('Rafael Bittencourt') === null);
+  check('a name that merely shares a prefix is not near it',
+    nearBinding('Rafael Bittencourts') === null, 'word boundary');
+  check('an unrelated head is not near it', nearBinding('Outro Cliente') === null);
+  check('no head at all is not near anything', nearBinding(null) === null);
+
+  /*
+   * The whole point is that it reaches the report someone reads. A held line that
+   * mentions nothing is the failure this case exists to prevent.
+   */
+  const client = {
+    searchProcessos: async () => [],
+    searchContatos: async () => [{ id: 849, nome: 'Rafael Bittencourt Correia Pinto' }],
+    listEntries: async () => [],
+  } as never;
+  const line = {
+    date: '10/08/2026', startTime: '09:00:00', endTime: '09:30:00',
+    description: 'Rafael Bittencourt Correia Pinto — medidas cautelares 5001234-56.2025.4.03.6100 (TRF3): alinhamento',
+  };
+  const [planned] = await (await import('./src/resolver.ts')).planEntries(client, [line]);
+  check('the head that drifted still holds, rather than being guessed at',
+    planned!.resolution.kind === 'matter-missing', planned!.resolution.kind);
+
+  const run = await executePlan(client, [planned!], { dryRun: true });
+  check('and the held line names the binding it nearly matched',
+    run.outcomes[0]!.status === 'held' && run.outcomes[0]!.detail.includes('standing binding for "Rafael Bittencourt"'),
+    run.outcomes[0]!.detail);
+
+  const decided = await resolveTarget(client, 'Rafael Bittencourt — medidas cautelares: alinhamento');
+  check('the exact head still binds without any of this firing', decided.kind === 'bound');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

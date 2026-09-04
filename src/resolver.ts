@@ -54,6 +54,39 @@ const internalPrefixes = (): string[] => firmConfig().internal.prefixes;
 const boundMatters = (): Record<string, { matterId: number; label: string }> =>
   firmConfig().matters ?? {};
 
+/**
+ * A standing decision for a name close to this head, when there is one.
+ *
+ * Bindings are keyed by the exact head a line starts with, and heads drift. A person
+ * told this installation that "Rafael Bittencourt" goes to matter 1611; the next
+ * week's timesheet wrote "Rafael Bittencourt Correia Pinto", the binding did not
+ * fire, and the three lines came back "registered, but the matter is not" — true, and
+ * silent about the decision sitting two words away. Read on its own that report is
+ * indistinguishable from one about a client nobody has ever decided anything about.
+ *
+ * Named, never applied. "Rafael Bittencourt" growing into his full name is the same
+ * person; "João Silva" growing into "João Silva Santos" need not be, and a binding is
+ * the strongest instrument here — it redirects every future line beginning with that
+ * name. So this turns a question into a confirmation and stops.
+ */
+export const nearBinding = (head: string | null): string | null => {
+  if (!head) return null;
+  // Word boundary, so "Ana Lima" is near "Ana Lima Souza" and not near "Ana Limantis".
+  const extendsName = (longer: string, shorter: string): boolean =>
+    longer.length > shorter.length && longer.startsWith(shorter) && /[\s,/(]/.test(longer[shorter.length]!);
+  for (const [key, binding] of Object.entries(boundMatters())) {
+    if (key === head) continue;
+    if (extendsName(head, key) || extendsName(key, head)) {
+      return (
+        `there is a standing binding for "${key}" — matter ${binding.matterId} (${binding.label}) — and this ` +
+        `head is a longer form of it. It was NOT applied, because only the person can say the two names are ` +
+        `the same client; if they are, add "${head}" to matters and every future line follows.`
+      );
+    }
+  }
+  return null;
+};
+
 /** The client name a line is about: the segment before the first em dash or colon. */
 export const clientNameOf = (description: string): string | null => {
   const head = description.split(/[—:]/)[0]?.trim();

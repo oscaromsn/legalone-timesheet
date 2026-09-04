@@ -23,7 +23,7 @@
 import { DESCRIPTION_MAX, type LegalOneTimesheet, type Link, type TimeEntryRecord } from './client.ts';
 import { guardedWrite, type Renew } from './auth.ts';
 import { assertConfigured } from './config.ts';
-import type { PlannedEntry } from './resolver.ts';
+import { clientNameOf, nearBinding, type PlannedEntry } from './resolver.ts';
 
 /**
  * What actually reaches the description field, overflow moved aside.
@@ -191,7 +191,13 @@ export async function executePlan(
         r.kind === 'ambiguous' || r.kind === 'escalate' || r.kind === 'unconfigured' ? r.reason
         : r.kind === 'matter-missing' ? `"${r.clientName}" is registered but the matter is not`
         : 'no link, and no decision was supplied';
-      record('held', `${r.kind}: ${reason}`);
+      /*
+       * A binding for a shorter or longer form of this head, if one exists. Held for
+       * the reason above is correct; held without mentioning that the person already
+       * decided something for very nearly this name is how a decision goes quiet.
+       */
+      const near = nearBinding(clientNameOf(entry.description));
+      record('held', `${r.kind}: ${reason}${near ? ` — ${near}` : ''}`);
       continue;
     }
 

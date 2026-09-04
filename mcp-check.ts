@@ -227,7 +227,8 @@ check('every tool declares a schema object', allTools.every((t) => typeof t.sche
 {
   const apply = allTools.find((t) => t.name === 'apply_config')!;
   check('applying a configuration warns that it is unproved',
-    /provisional/i.test(apply.description) && /setup --write/.test(apply.description));
+    /provisional/i.test(apply.description) && /reads it back/.test(apply.description)
+      && !/bun run/.test(apply.description));
   const log = allTools.find((t) => t.name === 'log_entries')!;
   check('booking hours asks for the configVersion the plan was made under',
     /configVersion/.test(log.description));

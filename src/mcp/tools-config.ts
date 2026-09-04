@@ -4,7 +4,7 @@
  * This is the half that was missing. Everything else here could be driven by an
  * agent; configuration could only be proposed, and adopting a proposal meant
  * `bun run setup --write` in a terminal — which, for the person this is built for,
- * means it never happens.
+ * means it never happens. The bundle they install carries no such command at all.
  *
  * Two tools, in the shape `propose_matter`/`create_matter` already established: one
  * derives and shows, the other takes the same inputs plus a token and writes. The
@@ -203,8 +203,9 @@ export const configTools: Tool[] = [
       'Writes the configuration that propose_config issued a token for, and it takes effect immediately — nothing ' +
       'needs restarting. Re-derives the proposal from the tenant before writing and refuses if the evidence moved, ' +
       'so a proposal a person approved five minutes ago cannot be written against records that have changed since. ' +
-      'Keeps a dated backup. The configuration it writes is marked provisional: booking hours stays refused until ' +
-      '`bun run setup --write` proves it with a probe entry, which is the one thing this cannot do from here.',
+      'Keeps a dated backup. The configuration it writes is marked provisional, which is not a refusal: the next ' +
+      'log_entries files the first real line, reads it back field by field, and stops there so a person can look ' +
+      'at it in Legal One. That read-back is the proof, and passing it clears the mark.',
     schema: { ...proposalArgs, confirmationToken: z.string().min(1) },
     run: (args: ProposalArgs & { confirmationToken: string }) => guard(async () => {
       const { client } = await context();
@@ -248,9 +249,10 @@ export const configTools: Tool[] = [
         provisional: true,
         aliasesWritten: Object.keys(built.firm.aliases).length,
         note:
-          'In force now — no restart. It is marked provisional, so log_entries will refuse until it has been ' +
-          'proved: run `bun run setup --write`, which files one probe entry, reads it back field by field and ' +
-          'deletes it. Reading, searching and planning work meanwhile.',
+          'In force now — no restart. It is marked provisional, meaning it has never been checked against Legal ' +
+          'One: the next log_entries files ONE real line, reads it back field by field and stops. Show the person ' +
+          'that entry and let them look at it, then call log_entries again for the rest. If the read-back ' +
+          'disagrees the line is deleted and the mark stays.',
       } satisfies ToolResult;
     }),
   },

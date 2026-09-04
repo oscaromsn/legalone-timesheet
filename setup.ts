@@ -15,7 +15,7 @@ import { createInterface } from 'node:readline/promises';
 import { LegalOneTimesheet, type Link } from './src/client.ts';
 import { browserSession, LoginRequiredError } from './src/session.ts';
 import { diagnose, format as formatDiagnosis } from './src/doctor.ts';
-import { discover, format as formatDiscovery, type Discovery } from './src/setup.ts';
+import { discover, format as formatDiscovery, verifyEntry, type Discovery } from './src/setup.ts';
 import { generateTemplate, format as formatTemplate } from './src/template.ts';
 
 import { configDir, entryTemplate, firmConfig, templatePath, writeConfig } from './src/config.ts';
@@ -208,51 +208,22 @@ async function selfTest(client: LegalOneTimesheet, link: Link): Promise<void> {
   const id = await client.create({ date, startTime: '00:00:00', endTime: '00:01:00', description: marker, link });
 
   try {
-    const { pairs } = await client.readFormPairs(`/TimeSheet/HorasTrabalhadas/EditHoraTrabalhada/${id}`);
-    const value = (name: string) => pairs.find(([k]) => k === name || k.split('.').pop() === name)?.[1] ?? '';
-    /*
-     * The four fields the template carries were never read back, and they are the
-     * ones a wrong configuration gets wrong. `client.ts` says out loud that a fixed
-     * `ExecutanteId` would "reassign someone else's work to the template's
-     * executante" — so a probe that checks only date, times and description prints
-     * "round-tripped: all match" over an entry booked to the wrong lawyer in the
-     * wrong área at the wrong rate. Checking them is what makes this a proof.
-     */
-    const fromTemplate = (leaf: string): string =>
-      entryTemplate().find(([k]) => k.split('.').pop() === leaf)?.[1] ?? '';
-
-    const mismatches = [
-      ['DtInicio', date],
-      ['HrInicio', '00:00:00'],
-      ['HrTermino', '00:01:00'],
-      ['DescricaoHT', marker],
-      ['ExecutanteId', fromTemplate('ExecutanteId')],
-      ['AreaId', fromTemplate('AreaId')],
-      ['TabelaValoresId', fromTemplate('TabelaValoresId')],
-    ].filter(([name, want]) => want !== '' && value(name!) !== want);
-
-    if (mismatches.length > 0) {
+    const verdict = await verifyEntry(client, id, {
+      date, startTime: '00:00:00', endTime: '00:01:00', description: marker,
+    });
+    if (!verdict.ok) {
       throw new Error(
         `entry ${id} came back different from what was sent: ` +
-          mismatches.map(([n, w]) => `${n} wanted "${w}", got "${value(n!)}"`).join('; '),
+          verdict.mismatches.map((m) => `${m.field} wanted "${m.wanted}", got "${m.got}"`).join('; '),
       );
     }
     say(`  entry ${id} round-tripped: date, times, description, executante, área and rate table all match.`);
 
-    /*
-     * The rate is reported rather than asserted, because it is the one field the
-     * server may legitimately overwrite: the rate block is populated by the
-     * recalculation that fires when a link is chosen. Whether Legal One recalculates
-     * on save was never measured, and the answer decides whether the value belongs
-     * in the template at all — so every run measures it.
-     */
-    const sentRate = fromTemplate('ValorHoraCobranca');
-    const gotRate = value('ValorHoraCobranca');
-    if (sentRate && gotRate !== sentRate) {
-      say(`  note: the rate was sent as "${sentRate}" and came back "${gotRate}" — Legal One recalculated it,`);
+    if (verdict.rate?.recalculated) {
+      say(`  note: the rate was sent as "${verdict.rate.sent}" and came back "${verdict.rate.got}" — Legal One recalculated it,`);
       say('        so the template\'s rate is not what gets billed.');
-    } else if (sentRate) {
-      say(`  the rate posted as "${sentRate}" is the rate that was filed — the template's value is what bills.`);
+    } else if (verdict.rate) {
+      say(`  the rate posted as "${verdict.rate.sent}" is the rate that was filed — the template's value is what bills.`);
     }
   } finally {
     await client.delete(id);

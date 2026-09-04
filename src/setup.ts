@@ -21,7 +21,7 @@
  */
 import type { LegalOneTimesheet } from './client.ts';
 import { clientNameOf } from './resolver.ts';
-import { firmConfig } from './config.ts';
+import { entryTemplate, firmConfig } from './config.ts';
 
 const ENTRY_FORM = '/TimeSheet/HorasTrabalhadas/EditHoraTrabalhada';
 
@@ -427,3 +427,69 @@ export async function discoverAliases(
 
   return { candidates, refused, unpaired: [...unpaired], entriesSampled: sampled.length };
 }
+
+/** One field that did not survive the round trip. */
+export interface Mismatch { field: string; wanted: string; got: string }
+
+export interface EntryVerification {
+  ok: boolean;
+  mismatches: Mismatch[];
+  /** The rate is measured, never asserted — see below. */
+  rate: { sent: string; got: string; recalculated: boolean } | null;
+}
+
+/**
+ * Reads a filed entry back and grades it against what was sent.
+ *
+ * This is the only real proof a configuration works. `doctor` cannot supply one: it
+ * runs with no installed template, so its template checks never fire and an unproved
+ * configuration passes it clean. A form that answers HTTP 200 with the page
+ * re-rendered is byte-for-byte the shape of a success, so the entry has to be read.
+ *
+ * The four template fields are graded, not just date/times/description. `client.ts`
+ * says out loud that a fixed `ExecutanteId` would "reassign someone else's work to
+ * the template's executante" — so a probe checking only the obvious fields prints
+ * "all match" over an entry booked to the wrong lawyer, in the wrong área, at the
+ * wrong rate.
+ *
+ * The rate is the exception, and reported rather than asserted: the rate block is
+ * populated by the recalculation that fires when a link is chosen, so the server may
+ * legitimately overwrite it. Whether it does decides whether the value belongs in the
+ * template at all, so every run measures it.
+ *
+ * Shared by both paths that prove a configuration — `setup --write` and the first
+ * booked line — so a terminal install and a conversational one cannot come to
+ * different conclusions about the same tenant.
+ */
+export async function verifyEntry(
+  client: LegalOneTimesheet,
+  id: number,
+  expected: { date: string; startTime: string; endTime: string; description: string },
+): Promise<EntryVerification> {
+  const { pairs } = await client.readFormPairs(`${ENTRY_FORM}/${id}`);
+  const value = (name: string): string =>
+    pairs.find(([k]) => k === name || k.split('.').pop() === name)?.[1] ?? '';
+  const fromTemplate = (leaf: string): string =>
+    entryTemplate().find(([k]) => k.split('.').pop() === leaf)?.[1] ?? '';
+
+  const mismatches = ([
+    ['DtInicio', expected.date],
+    ['HrInicio', expected.startTime],
+    ['HrTermino', expected.endTime],
+    ['DescricaoHT', expected.description],
+    ['ExecutanteId', fromTemplate('ExecutanteId')],
+    ['AreaId', fromTemplate('AreaId')],
+    ['TabelaValoresId', fromTemplate('TabelaValoresId')],
+  ] as Array<[string, string]>)
+    .filter(([field, wanted]) => wanted !== '' && value(field) !== wanted)
+    .map(([field, wanted]) => ({ field, wanted, got: value(field) }));
+
+  const sent = fromTemplate('ValorHoraCobranca');
+  const got = value('ValorHoraCobranca');
+  return {
+    ok: mismatches.length === 0,
+    mismatches,
+    rate: sent ? { sent, got, recalculated: got !== sent } : null,
+  };
+}
+

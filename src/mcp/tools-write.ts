@@ -8,12 +8,14 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { idempotentWrite, read } from '../auth.ts';
-import { clientNameOf, planEntries } from '../resolver.ts';
-import { executePlan, entryKey, toMinutes, format as formatRun, type Decision } from '../execute.ts';
+import { idempotentWrite, read, type Renew } from '../auth.ts';
+import { clientNameOf, planEntries, type PlannedEntry } from '../resolver.ts';
+import { descriptionSent, executePlan, entryKey, toMinutes, format as formatRun, type Decision } from '../execute.ts';
 import { proposeMatter, validateAnswers, createFromProposal } from '../interview.ts';
 import { diagnose, format as formatDoctor } from '../doctor.ts';
-import { configProvisional, configVersion } from '../config.ts';
+import { verifyEntry } from '../setup.ts';
+import type { LegalOneTimesheet } from '../client.ts';
+import { configProvisional, configVersion, firmConfig, writeConfig } from '../config.ts';
 import { context, guard, type ToolResult } from './context.ts';
 import type { Tool } from './tools-read.ts';
 
@@ -33,6 +35,119 @@ const tokenFor = (answers: Record<string, string>): string => {
   const canonical = JSON.stringify(Object.entries(answers).sort(([a], [b]) => a.localeCompare(b)));
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 };
+
+/**
+ * Proves a configuration by filing the first line for real, then stops.
+ *
+ * A configuration written from a conversation has never been proved against Legal
+ * One, and `doctor` cannot prove one: it runs with no installed template, so its
+ * template checks never fire and an unproved configuration passes it clean. The only
+ * real proof writes to production and reads it back.
+ *
+ * That proof used to be `bun run setup --write`, which was unreachable where it
+ * mattered: the `.mcpb` bundle a lawyer installs carries the compiled server and no
+ * scripts, so there was no such command to run. Worse, `setup --write` never wrote
+ * `template.json`, so on a cold install the probe posted `<your-user-id>` and took a
+ * 405 naming neither the file nor the field.
+ *
+ * So the probe is the first real line instead. Nothing synthetic is filed and nothing
+ * has to be cleaned up afterwards; the proof covers classification as well as the
+ * template, which the synthetic probe never did; and a person sees a real entry of
+ * their own in Legal One rather than a marker row. On a mismatch the line is deleted
+ * and the configuration stays provisional, so the tenant is left as it was found.
+ *
+ * Stopping is the point. The person looks at the entry, and calls again — the
+ * duplicate-span set already covers the line that landed, so the rest simply follow.
+ */
+async function proveThenStop(
+  client: LegalOneTimesheet,
+  planned: PlannedEntry[],
+  decisions: Record<string, Decision>,
+  renew: Renew,
+): Promise<ToolResult> {
+  const preview = await executePlan(client, planned, { decisions, dryRun: true, renew });
+  const candidates = preview.outcomes.filter((o) => o.status === 'would-write');
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      error: 'the configuration is unproved and there is no line to prove it with',
+      hint:
+        'Every line here is already logged or held, so none would be filed. Proving the configuration means ' +
+        'filing one real line and reading it back; supply decisions for the held ones, or a line that is not ' +
+        'yet in the tenant.',
+      report: formatRun(preview),
+    };
+  }
+
+  /*
+   * Prefer a matter over the firm contact: the rate block is populated by the
+   * recalculation that fires when a link is chosen, so a matter-linked line measures
+   * the case that actually bills.
+   */
+  const byKey = new Map(planned.map((p) => [entryKey(p.date, p.startTime, p.endTime), p]));
+  const chosen = candidates.find((o) => o.detail.startsWith('processo')) ?? candidates[0]!;
+  const line = byKey.get(chosen.key);
+  if (!line) {
+    return {
+      ok: false,
+      error: `the planned line for ${chosen.key} could not be found again`,
+      hint: 'This is a bug rather than a state to act on. Nothing was filed; run plan_entries and report it.',
+    };
+  }
+
+  const report = await executePlan(client, [line], { decisions, renew });
+  const filed = report.outcomes.find((o) => o.status === 'written');
+  if (!filed?.id) {
+    return {
+      ok: false,
+      error: 'the probe line was not filed, so the configuration is still unproved',
+      hint:
+        'The line the dry run said would be written was not. Nothing changed on disk and the configuration ' +
+        'stays provisional; the report below says what happened to it.',
+      report: formatRun(report),
+    };
+  }
+
+  const verdict = await verifyEntry(client, filed.id, {
+    date: line.date,
+    startTime: line.startTime,
+    endTime: line.endTime,
+    description: descriptionSent(line.description),
+  });
+
+  if (!verdict.ok) {
+    await client.delete(filed.id);
+    return {
+      ok: false,
+      error: 'the configuration is wrong: the line came back different from what was sent',
+      mismatches: verdict.mismatches,
+      hint:
+        `Entry ${filed.id} was deleted, so nothing was left behind, and the configuration stays provisional. ` +
+        'Each mismatch names a template value that is not what Legal One filed — run propose_config again and ' +
+        'settle those before booking.',
+    };
+  }
+
+  writeConfig({ firm: { ...firmConfig(), provisional: false } });
+
+  return {
+    ok: true,
+    proved: true,
+    stopped: true,
+    configVersion: configVersion(),
+    entry: { id: filed.id, key: filed.key, detail: filed.detail },
+    written: 1,
+    remaining: planned.length - 1,
+    ...(verdict.rate?.recalculated
+      ? { rateNote: `sent as ${verdict.rate.sent}, filed as ${verdict.rate.got} — Legal One recalculated it` }
+      : {}),
+    note:
+      `The configuration is now proved: entry ${filed.id} round-tripped with the right date, times, ` +
+      'description, executante, área and rate table. Nothing else was filed. Show the person this entry, ask ' +
+      'them to look at it in Legal One, and call log_entries again with the same lines to file the rest — the ' +
+      'line that landed is already covered and will not be booked twice.',
+  };
+}
 
 export const writeTools: Tool[] = [
   {
@@ -107,7 +222,11 @@ export const writeTools: Tool[] = [
       'whatever it would not decide. Never books a span already covered, moves description overflow to observations, ' +
       'and reports held hours. Set dryRun to see the outcome without writing. Pass the configVersion that ' +
       'plan_entries returned: this re-plans internally, so a configuration applied in between would execute a ' +
-      'different plan than the one the person approved, with both steps reporting success.',
+      'different plan than the one the person approved, with both steps reporting success. ' +
+      'While the configuration is provisional — written from a conversation and never proved against Legal One — ' +
+      'the first call files exactly ONE real line, reads it back field by field, and stops: that is the proof, and ' +
+      'it is the whole of it. Show the person the entry and let them look at it in Legal One, then call again with ' +
+      'the same lines for the rest. If the read-back disagrees the line is deleted and nothing is booked.',
     schema: {
       lines: z.array(lineArg).min(1),
       decisions: z.record(z.string(), z.object({
@@ -122,25 +241,6 @@ export const writeTools: Tool[] = [
     run: ({ lines, decisions, dryRun, configVersion: expected }) => guard(async () => {
       const { client, renew } = await context();
 
-      /*
-       * A configuration written from a conversation has never been proved against
-       * Legal One. `doctor` cannot prove it — it runs with no installed template, so
-       * its template checks never fire and an unverified configuration passes clean —
-       * and the only real proof writes a probe entry to production, which this
-       * surface deliberately does not do. Reading and planning stay open; booking
-       * hours under an unproved template would file them under whichever executante
-       * and rate the template happens to carry.
-       */
-      if (configProvisional() && !dryRun) {
-        return {
-          ok: false,
-          error: 'the configuration has not been proved against Legal One yet',
-          hint:
-            'It was written from a conversation and is marked provisional. Run `bun run setup --write` in the ' +
-            'repository: it files one probe entry, reads it back field by field and deletes it. Planning, reading ' +
-            'and dryRun work meanwhile.',
-        };
-      }
       if (expected && expected !== configVersion()) {
         return {
           ok: false,
@@ -158,6 +258,11 @@ export const writeTools: Tool[] = [
         else if (d.matterId) mapped[key] = { kind: 'link', link: { kind: 'processo', id: d.matterId, text: '' } };
         else if (d.contactId) mapped[key] = { kind: 'link', link: { kind: 'contato', id: d.contactId, text: '' } };
       }
+
+      if (configProvisional() && !dryRun) {
+        return await proveThenStop(client, planned, mapped, renew);
+      }
+
       const report = await executePlan(client, planned, { decisions: mapped, dryRun, renew });
       return {
         ok: true, dryRun,

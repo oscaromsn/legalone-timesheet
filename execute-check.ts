@@ -9,7 +9,38 @@
  * Offline: the client is a stub, so this needs no fixtures, no session and no
  * network. Add a case whenever executePlan learns a new way to decide.
  */
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+/*
+ * A synthetic configuration, for the same reason `session-check.ts` carries one:
+ * `executePlan` now asserts the installation is configured before it writes, and a
+ * fresh clone has no configuration. Read lazily by `config.ts`, so setting the
+ * variable here beats the first read even though imports hoist above it.
+ */
+const CONFIGURED_DIR = mkdtempSync(join(tmpdir(), 'legalone-gate-'));
+{
+  mkdirSync(CONFIGURED_DIR, { recursive: true });
+  writeFileSync(join(CONFIGURED_DIR, 'aliases.json'), JSON.stringify({
+    aliases: {},
+    internal: { prefixes: ['Escritório'] },
+    defaults: {
+      escritorioOrigemId: '1', escritorioOrigemText: 'Example firm',
+      escritorioResponsavelId: '1', escritorioResponsavelText: 'Example firm',
+      responsavelId: '2', responsavelText: 'Example lawyer',
+      responsavelPosicaoId: '3', responsavelPosicaoText: 'Responsável',
+      naturezaId: '4', naturezaText: 'Example natureza',
+      contatoEscritorioId: '5', contatoEscritorioText: 'Example firm',
+    },
+    titleFormat: null,
+  }));
+  writeFileSync(join(CONFIGURED_DIR, 'template.json'), JSON.stringify([['SituacaoId', '0']]));
+  process.env['LEGALONE_CONFIG_DIR'] = CONFIGURED_DIR;
+}
+
 import { executePlan, entryKey } from './src/execute.ts';
+import { reloadConfig } from './src/config.ts';
 import { SessionExpiredError } from './src/client.ts';
 import type { PlannedEntry } from './src/resolver.ts';
 
@@ -38,6 +69,34 @@ const stub = (existing: Array<Record<string, unknown>> = []) => {
   const { client, created } = stub();
   const report = await executePlan(client, [internal('01/09/2026', '09:00:00', '10:00:00', 'A')], { dryRun: true });
   check('dry run writes nothing', created.length === 0 && report.outcomes[0]!.status === 'would-write');
+}
+
+{
+  /*
+   * The write gate, and the line either side of it.
+   *
+   * This gate used to live in the resolver, where it stopped planning too — for
+   * template placeholders that only a POST ever binds. A dry run on an unconfigured
+   * installation is the report that makes the alias decisions legible, so it has to
+   * survive exactly the state that refuses a write.
+   */
+  const empty = mkdtempSync(join(tmpdir(), 'legalone-unconfigured-'));
+  process.env['LEGALONE_CONFIG_DIR'] = empty;
+  reloadConfig();
+
+  const { client, created } = stub();
+  const line = internal('01/09/2026', '09:00:00', '10:00:00', 'A');
+  let refused = '';
+  try { await executePlan(client, [line]); } catch (error) { refused = String((error as Error).message); }
+  check('an unconfigured installation refuses before anything lands',
+    /not configured/.test(refused) && created.length === 0, refused.slice(0, 60));
+
+  const report = await executePlan(client, [line], { dryRun: true });
+  check('...but a dry run still plans there',
+    created.length === 0 && report.outcomes[0]!.status === 'would-write');
+
+  process.env['LEGALONE_CONFIG_DIR'] = CONFIGURED_DIR;
+  reloadConfig();
 }
 
 {

@@ -6,7 +6,7 @@ import {
   type LegalOneTimesheet,
   type Processo,
 } from './client.ts';
-import { assertConfigured, firmConfig } from './config.ts';
+import { classifyState, firmConfig } from './config.ts';
 
 /**
  * Decides what a timesheet line should be booked against.
@@ -28,6 +28,16 @@ export type Resolution =
   | { kind: 'linked'; link: Link; processo: Processo; via: 'cnj' | 'name' }
   | { kind: 'ambiguous'; candidates: Processo[]; reason: string }
   | { kind: 'matter-missing'; contato: Contato; cnj: string | null; clientName: string }
+  /*
+   * The search could not have found this, so its absence is not a finding.
+   *
+   * Distinct from `escalate` on purpose. "Not registered — administrative has to
+   * create it" is a claim about the firm's records; on an installation with no alias
+   * table it was a claim about this installation, made in the register's voice, about
+   * clients registered for years. Naming the difference is what lets a plan run before
+   * a configuration exists without any of its misses being believed.
+   */
+  | { kind: 'unconfigured'; reason: string; clientName: string | null }
   | { kind: 'escalate'; reason: string; clientName: string | null };
 
 /*
@@ -72,15 +82,28 @@ export async function resolveTarget(
   description: string,
 ): Promise<Resolution> {
   /*
-   * An unconfigured installation does not fail here, it answers wrongly. With no
-   * alias table every name is passed through unchanged, which is survivable; with
-   * somebody else's, a real client name is rewritten and the search misses, and the
-   * line comes back `escalate` — "not registered, administrative has to create it"
-   * — about a client that has been registered for years. Refusing is the only
-   * outcome that cannot be mistaken for an answer.
+   * An unconfigured installation does not fail here, it answers wrongly: with no
+   * alias table every name is passed through unchanged, the search misses, and the
+   * line comes back `escalate` — "not registered, administrative has to create it" —
+   * about a client registered for years.
+   *
+   * This used to refuse the whole plan for that reason, which was the right instinct
+   * and the wrong remedy: it also refused every line the alias table has no bearing
+   * on, and it refused for template placeholders that classification never reads. The
+   * verdict is labelled instead. Nothing here is believed that should not be, and the
+   * report that names which heads are unresolvable is exactly the evidence the alias
+   * decisions need.
    */
-  assertConfigured();
-  if (isInternal(description)) return { kind: 'internal', link: contatoEscritorio() };
+  const state = classifyState();
+  if (isInternal(description)) {
+    return state.internal
+      ? { kind: 'internal', link: contatoEscritorio() }
+      : {
+          kind: 'unconfigured',
+          reason: 'internal work, but defaults.contatoEscritorioId is unset, so there is nothing to link it to',
+          clientName: null,
+        };
+  }
 
   const cnj = description.match(CNJ_PATTERN)?.[0] ?? null;
   const rawName = clientNameOf(description);
@@ -138,6 +161,20 @@ async function missingMatter(
 ): Promise<Resolution> {
   const contatos = await firstNonEmpty(candidateNames(clientName), (n) => client.searchContatos(n));
   if (contatos.length === 0) {
+    /*
+     * Absent alias table, so this name was searched exactly as the timesheet wrote it.
+     * Legal One files under registered names — "Beatriz Salgado" is filed under ORIONPAY
+     * — so a miss here says nothing about whether the client exists.
+     */
+    if (!classifyState().aliasTable) {
+      return {
+        kind: 'unconfigured',
+        reason:
+          `"${clientName}" was searched literally: this installation has no alias table, ` +
+          'so a name the timesheet uses cannot be mapped to the name Legal One files it under',
+        clientName,
+      };
+    }
     return {
       kind: 'escalate',
       reason: `"${clientName}" is not registered as a contact — administrative has to create it first`,

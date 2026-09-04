@@ -167,5 +167,67 @@ const at = async (dir: string) => {
     aliasRefusal('J. Ribeiro', 'João Ribeiro de Souza', 1) ?? '');
 }
 
+
+{
+  /*
+   * The two gates answer different questions, and conflating them cost a real
+   * session its week.
+   *
+   * `configState` asks whether an entry can be written, which includes the seven
+   * template values. `classifyState` asks whether a line can be resolved to a matter,
+   * which reads the alias table and the firm contact and never touches the template.
+   * The resolver used to consult the first, so `<placeholder>` values that only a POST
+   * ever binds refused the plan as well as the write.
+   */
+  const dir = scratch();
+  writeFileSync(join(dir, 'aliases.json'), JSON.stringify(full()));
+  // A template shaped like the shipped example: real keys, one value never filled.
+  writeFileSync(join(dir, 'template.json'), JSON.stringify([
+    ['SituacaoId', '0'],
+    ['Executantes[{EXEC}].ExecutanteId', '<your-user-id>'],
+  ]));
+  const c = await at(dir);
+
+  check('an unset template value refuses a write',
+    c.configState().configured === false
+      && c.configState().reasons.some((r: string) => /entry template still carries/.test(r)));
+  check('...and does not refuse a plan', c.classifyState().configured === true);
+  check('...because classification never reads the template',
+    c.classifyState().reasons.length === 0);
+}
+
+{
+  /*
+   * The distinction the label exists for: absent alias table versus present-and-empty.
+   *
+   * An empty table is a decision — aliases are billing decisions and start empty by
+   * design. An absent one means nothing has been decided at all, and a name that
+   * misses under it has not been looked for so much as looked past.
+   */
+  const dir = scratch();
+  const c = await at(dir);
+  check('no configuration at all reports no alias table', c.classifyState().aliasTable === false);
+
+  const dir2 = scratch();
+  writeFileSync(join(dir2, 'aliases.json'), JSON.stringify(full()));
+  const c2 = await at(dir2);
+  check('an empty alias table is still a table', c2.classifyState().aliasTable === true);
+}
+
+{
+  /*
+   * Internal lines need the firm's own contact id and nothing else, so an
+   * installation missing only that can still resolve every client line.
+   */
+  const dir = scratch();
+  writeFileSync(join(dir, 'aliases.json'), JSON.stringify(full({ contatoEscritorioId: '<firm-contact-id>' })));
+  const c = await at(dir);
+  const state = c.classifyState();
+  check('an unset firm contact is reported, not thrown',
+    state.internal === false && state.aliasTable === true
+      && state.reasons.some((r: string) => /contatoEscritorioId/.test(r)));
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

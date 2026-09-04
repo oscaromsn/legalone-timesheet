@@ -9,8 +9,8 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { idempotentWrite, read } from '../auth.ts';
-import { planEntries } from '../resolver.ts';
-import { executePlan, entryKey, format as formatRun, type Decision } from '../execute.ts';
+import { clientNameOf, planEntries } from '../resolver.ts';
+import { executePlan, entryKey, toMinutes, format as formatRun, type Decision } from '../execute.ts';
 import { proposeMatter, validateAnswers, createFromProposal } from '../interview.ts';
 import { diagnose, format as formatDoctor } from '../doctor.ts';
 import { configProvisional, configVersion } from '../config.ts';
@@ -39,12 +39,38 @@ export const writeTools: Tool[] = [
     name: 'plan_entries',
     description:
       'Classifies timesheet lines against Legal One without writing anything. Every line comes back linked, ' +
-      'internal, matter-missing, ambiguous or escalate. Run this before log_entries and show the result to the ' +
-      'person — the states it refuses to decide are the ones where a wrong guess bills the wrong client silently.',
+      'internal, matter-missing, ambiguous, escalate or unconfigured. Run this before log_entries and show the ' +
+      'result to the person — the states it refuses to decide are the ones where a wrong guess bills the wrong ' +
+      'client silently. Works before this installation is configured: there, a name it could not place comes ' +
+      'back unconfigured, meaning the search had no alias table and never had a chance, NOT that the client is ' +
+      'unregistered. The unresolved summary totals the hours riding on each such name.',
     schema: { lines: z.array(lineArg).min(1) },
     run: ({ lines }) => guard(async () => {
       const { client, renew } = await context();
       const planned = await read(() => planEntries(client, lines), renew);
+
+      /*
+       * Hours, grouped by the name at the head of the line.
+       *
+       * A list of unresolved lines is not what the decision needs. Approving an alias
+       * rewrites every future line beginning with that name, and the question a person
+       * is actually answering is how much time rides on it — which was previously left
+       * for them to add up by hand across sixty lines.
+       */
+      const unresolved = new Map<string, { minutes: number; lines: number; state: string; reason: string }>();
+      for (const p of planned) {
+        const r = p.resolution;
+        if (r.kind === 'linked' || r.kind === 'internal') continue;
+        const head = clientNameOf(p.description) ?? '(no client name)';
+        const reason = r.kind === 'matter-missing'
+          ? `"${r.clientName}" is registered, the matter is not`
+          : r.reason;
+        const seen = unresolved.get(head) ?? { minutes: 0, lines: 0, state: r.kind, reason };
+        seen.minutes += toMinutes(p.endTime) - toMinutes(p.startTime);
+        seen.lines += 1;
+        unresolved.set(head, seen);
+      }
+
       return {
         ok: true,
         configVersion: configVersion(),
@@ -53,11 +79,24 @@ export const writeTools: Tool[] = [
           description: p.description.slice(0, 120),
           state: p.resolution.kind,
           detail: p.resolution.kind === 'linked' ? p.resolution.processo.pasta
-            : p.resolution.kind === 'ambiguous' || p.resolution.kind === 'escalate' ? p.resolution.reason
+            : p.resolution.kind === 'ambiguous' || p.resolution.kind === 'escalate'
+              || p.resolution.kind === 'unconfigured' ? p.resolution.reason
             : p.resolution.kind === 'matter-missing' ? `"${p.resolution.clientName}" is registered, the matter is not`
             : 'firm-internal',
         })),
-        note: 'Answer ambiguous / matter-missing / escalate with decisions on log_entries, keyed by `key`.',
+        unresolved: [...unresolved.entries()]
+          .sort(([, a], [, b]) => b.minutes - a.minutes)
+          .map(([head, u]) => ({
+            head,
+            state: u.state,
+            lines: u.lines,
+            hours: Number((u.minutes / 60).toFixed(2)),
+            reason: u.reason,
+          })),
+        note:
+          'Answer ambiguous / matter-missing / escalate with decisions on log_entries, keyed by `key`. ' +
+          'unconfigured is not a decision to make line by line: it means this installation has no alias table, ' +
+          'so run propose_config — the unresolved summary says how many hours each name is worth.',
       };
     }),
   },

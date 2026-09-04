@@ -22,7 +22,18 @@
  */
 import { DESCRIPTION_MAX, type LegalOneTimesheet, type Link, type TimeEntryRecord } from './client.ts';
 import { guardedWrite, type Renew } from './auth.ts';
+import { assertConfigured } from './config.ts';
 import type { PlannedEntry } from './resolver.ts';
+
+/**
+ * What actually reaches the description field, overflow moved aside.
+ *
+ * Exported because reading an entry back has to compare against what was sent, not
+ * against what the caller handed in — and a probe that compared the wrong one would
+ * report a mismatch on every line long enough to overflow.
+ */
+export const descriptionSent = (full: string): string =>
+  full.length > DESCRIPTION_MAX ? `${full.slice(0, DESCRIPTION_MAX - 1)}…` : full;
 
 /**
  * Identifies an entry by when it happened, never by what it says.
@@ -110,7 +121,7 @@ export interface ExecutionReport {
   heldMinutes: number;
 }
 
-const toMinutes = (t: string): number => {
+export const toMinutes = (t: string): number => {
   const [h = 0, m = 0] = t.split(':').map(Number);
   return h * 60 + m;
 };
@@ -125,6 +136,17 @@ export async function executePlan(
 ): Promise<ExecutionReport> {
   const outcomes: Outcome[] = [];
   if (planned.length === 0) return { outcomes, written: 0, alreadyLogged: 0, held: 0, heldMinutes: 0 };
+
+  /*
+   * The write gate, and the only one. It used to sit in the resolver, where it also
+   * stopped planning — for template placeholders that only a POST ever reads. Here it
+   * guards what actually needs guarding, once, before anything lands: a `<placeholder>`
+   * bound into the form comes back 405 naming neither the file nor the field.
+   *
+   * Deliberately after the dryRun-free path check and not inside the loop: refusing
+   * halfway through a batch is the one outcome worse than refusing at the start.
+   */
+  if (!options.dryRun) assertConfigured();
 
   const dates = planned.map((p) => p.date).sort((a, b) => sortable(a).localeCompare(sortable(b)));
   const logged = bookedSpans(await client.listEntries(dates[0]!, dates[dates.length - 1]!));
@@ -165,7 +187,7 @@ export async function executePlan(
        */
       const r = entry.resolution;
       const reason =
-        r.kind === 'ambiguous' || r.kind === 'escalate' ? r.reason
+        r.kind === 'ambiguous' || r.kind === 'escalate' || r.kind === 'unconfigured' ? r.reason
         : r.kind === 'matter-missing' ? `"${r.clientName}" is registered but the matter is not`
         : 'no link, and no decision was supplied';
       record('held', `${r.kind}: ${reason}`);
@@ -179,7 +201,7 @@ export async function executePlan(
       date: entry.date,
       startTime: entry.startTime,
       endTime: entry.endTime,
-      description: overflows ? `${full.slice(0, DESCRIPTION_MAX - 1)}…` : full,
+      description: descriptionSent(full),
       ...(overflows ? { observations: full } : {}),
       link: { ...link, text },
     };

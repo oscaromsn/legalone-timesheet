@@ -217,6 +217,41 @@ export const assertConfigured = (): void => {
   throw new Error(`aliases.json: this installation is not configured — ${state.reasons.join('; ')}`);
 };
 
+export interface ClassifyState {
+  /** Whether classification can reach every verdict it is capable of. */
+  configured: boolean;
+  /** Whether an alias table exists. Empty is a decision; absent is not. */
+  aliasTable: boolean;
+  /** Whether internal lines can be linked — needs a real contatoEscritorioId. */
+  internal: boolean;
+  reasons: string[];
+}
+
+/**
+ * What classification can and cannot decide here — a narrower question than
+ * `configState`, and the reason the two exist separately.
+ *
+ * Resolving a line to a matter reads the alias table, the internal prefixes and the
+ * firm's own contact id. It never reads the entry template: the seven values there are
+ * bound once, in `bindTemplate`, at POST time. So a template that still carries
+ * placeholders is no reason to refuse a plan, and refusing one cost a real session the
+ * only report that would have made its alias decisions legible.
+ *
+ * This does not raise. An unconfigured installation still classifies; what changes is
+ * that a name it cannot find comes back `unconfigured` rather than `not registered`,
+ * because with no alias table the search never had a chance to find it.
+ */
+export const classifyState = (): ClassifyState => {
+  const { firm, firmOnDisk } = load();
+  const reasons: string[] = [];
+  if (!firmOnDisk) {
+    reasons.push(`no configuration at ${firmPath()} — names are searched literally, with no alias table`);
+  }
+  const internal = !isPlaceholder(firm.defaults.contatoEscritorioId);
+  if (!internal) reasons.push('defaults.contatoEscritorioId is unset, so internal lines cannot be linked');
+  return { configured: firmOnDisk && internal, aliasTable: firmOnDisk, internal, reasons };
+};
+
 /**
  * Replaces the configuration, atomically and recoverably.
  *

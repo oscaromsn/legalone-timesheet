@@ -18,7 +18,8 @@ integrate it into your own code, or to maintain it, skip to
 
 ## Setting it up
 
-This part needs a terminal, once. After it you should not see one again.
+This part needs a terminal, once — to install. Configuring happens in the
+conversation afterwards, and you should not see a terminal again.
 
 You need a **Mac** with **Google Chrome** installed (Edge or Chromium also work),
 [**Bun**](https://bun.sh) or **Node**, and your ordinary Legal One login — the same one
@@ -63,14 +64,28 @@ reads it back field by field — date, times, description, executante, área and
 table — and deletes it. Entries can be deleted; matters cannot, which is why the
 proof is an entry.
 
-**Most of that can happen in conversation instead.** Once the connector is wired to
-Claude, asking for *Configurar o Legal One* does the same discovery, shows you the
-evidence behind every value, asks about what your records do not settle, and writes
-the configuration — no terminal. What it will not do is file the probe: a
-conversation should not write to production on its own. So a configuration written
-that way is marked **provisional**, and booking hours stays refused until you run
-`bun run setup --write` once. Reading, searching, planning and dry runs work
-meanwhile.
+**All of that can happen in conversation instead, and for most people should.** Once
+the connector is wired to Claude, asking for *Configurar o Legal One* does the same
+discovery, shows you the evidence behind every value, asks about what your records do
+not settle, and writes the configuration — no terminal.
+
+A configuration written that way is marked **provisional**: it has never been checked
+against Legal One. It is proved the first time you book hours. That run files exactly
+one real line from your own timesheet, reads it back field by field, and stops — so
+you can look at that single entry in Legal One before the rest follow. Ask again and
+they do. If the read-back disagrees, the line is deleted and nothing is booked.
+
+The proof is a real line rather than a marker entry because it proves more: the
+synthetic probe only ever tested the template, while a real line also tests that the
+work was classified to the right matter. Nothing is left behind to clean up either
+way.
+
+**Then this section stops applying.** `bun run setup --write` still works from a
+clone, and the interview it runs is the one thing the conversation has no equivalent
+for — it can offer you a numbered list of the values your records contest. But it is
+an escape hatch for people working on this, not a step anyone has to take. The bundle
+below carries the compiled server and no scripts, so there is no such command there
+to run.
 
 ### Connecting it to Claude
 
@@ -268,8 +283,9 @@ different software.
 | what you see | what it means | what to do |
 |---|---|---|
 | `Sign in required` on a first run | normal — there is no session yet | sign in on the open window, run it again |
-| `no Legal One tenant configured` | something ran before `setup` did | run `bun run setup`, then `--write` |
-| a value reading `<placeholder>` | `setup` proposed a configuration you never adopted | run `bun run setup --write` |
+| `no Legal One tenant configured` | something ran before you signed in | ask Claude to authenticate — the tenant is discovered during sign-in |
+| `this installation is not configured` | the firm's ids have never been read | ask Claude to configure it; planning still works meanwhile, and says how many hours ride on each name it could not place |
+| a value reading `<placeholder>` | a configuration was proposed and never adopted | ask Claude to configure it — do not fill these in by hand |
 | `browser started but wrote nothing into …` | the browser cannot write its profile directory — a sandbox or an endpoint policy, not Legal One | point `LEGALONE_PROFILE_DIR` somewhere writable, or run outside the sandbox |
 | `browser did not open a debugging port … another instance` | a second copy is holding that profile | close it, or set `LEGALONE_PROFILE_DIR` |
 | `refusing to write: N of M existing entries carry timestamps this client cannot read` | your tenant renders dates or times differently, so the duplicate check would fail open | run the doctor and read what it says about time format |

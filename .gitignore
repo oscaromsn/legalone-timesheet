@@ -1,5 +1,12 @@
 node_modules/
 
+# Build output. `dist/` is compiled JavaScript and `build/` is the .mcpb staged and
+# packed — both are derived from the source beside them, and the bundle carries a
+# copy of node_modules.
+dist/
+build/
+*.mcpb
+
 # Credentials. The cookie in .env is the entire credential for the account.
 .env
 

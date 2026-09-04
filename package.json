@@ -1,11 +1,13 @@
 {
   "name": "legalone-timesheet",
+  "version": "0.1.0",
   "type": "module",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "setup": "bun setup.ts"
+    "setup": "bun setup.ts",
+    "build": "node build.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

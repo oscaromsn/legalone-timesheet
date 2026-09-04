@@ -74,7 +74,28 @@ meanwhile.
 
 ### Connecting it to Claude
 
-Add this to `claude_desktop_config.json` — on a Mac,
+Build the bundle and install it:
+
+```bash
+bun run build       # compiles, stages, and packs build/legalone-timesheet-<version>.mcpb
+```
+
+Then double-click the `.mcpb`, drag it onto the Claude Desktop window, or use
+**Settings → Extensions → Advanced settings → Install Extension…**
+
+Nothing else is required. Claude Desktop ships its own Node, so there is no runtime
+to install and no absolute path to write down; the bundle carries its own
+dependencies; and the compiled server is checked against the source at build time, so
+the artefact cannot quietly expose something different from what the gates test.
+
+If you previously wired this up by hand, remove the `legalone` entry from
+`claude_desktop_config.json` — otherwise the same tools arrive twice under two names.
+
+<details>
+<summary>Wiring it by hand instead</summary>
+
+Running from source is the right thing while developing, since it picks up edits
+without a rebuild. Add this to `claude_desktop_config.json` — on a Mac,
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
@@ -92,12 +113,17 @@ Two details that cost people an afternoon:
 
 **Use the absolute path to `node`** (`which node` prints yours). Applications launched
 from the macOS Dock do not inherit your shell's `PATH`, so a bare `"node"` fails with
-nothing useful in the logs.
+nothing useful in the logs. The bundle does not have this problem, because Claude
+Desktop provides the runtime itself.
 
 **Node, not Bun.** The MCP SDK imports `zod/v3`; Node resolves that subpath and Bun
 1.4 does not. Everything else here runs under either.
 
-Restart Claude Desktop — the config is read at launch — and ask it something.
+</details>
+
+An installed bundle is live as soon as it finishes installing. A hand-wired server is
+not: `claude_desktop_config.json` is read at launch, so quit Claude Desktop fully and
+reopen it. Then ask it something.
 
 ---
 
@@ -272,6 +298,7 @@ is, and it is the thing to preserve if you change anything here.
 ## Layers
 
 ```
+build.mjs           build    — compiles, stages and packs the .mcpb bundle.
 setup.ts            command  — sign in, check the tenant, configure, prove it.
 mcp.ts              command  — the MCP server, over stdio.
 src/mcp/            surface  — nineteen tools wrapping the library. No new rules.
@@ -314,7 +341,9 @@ bun run typecheck         # must be clean
 bun run session-check.ts  # 39 passed — expiry detection and renewal, offline
 bun run execute-check.ts  # 8 passed  — never book the same hour twice, offline
 bun run mcp-check.ts      # 10 passed — the agent-facing contract, offline
+bun run config-check.ts   # 25 passed — configuration and the alias refusals, offline
 bun run verify.ts         # once you have captured a fixture
+bun run build             # compiles and packs; refuses if the bundle drifts from source
 node <each of the above>  # runtime parity; all four run under either
 ```
 

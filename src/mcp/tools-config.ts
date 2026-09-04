@@ -20,6 +20,7 @@ import {
   entryTemplate,
   firmConfig,
   writeConfig,
+  type Binding,
   type EntryTemplate,
   type FirmConfig,
 } from '../config.ts';
@@ -119,23 +120,21 @@ const unknownKeys = (args: ProposalArgs): ToolResult | null => {
   return (
     wrong('overrides', args.overrides, SETTLED_KEYS,
       'It settles the firm-wide defaults the records could not, and nothing else. To send one client\'s ' +
-      'lines to one matter, use `matters` — keyed by the name at the head of the line, valued by a matter ' +
-      'id, a CNJ or a folder number.')
+      'lines to one target, use `matters` — keyed by the name at the head of the line, valued by a matter ' +
+      'id, a CNJ or a folder number, or by "contato: <name>" to bind them to a contact instead of a matter.')
     ?? wrong('templateValues', args.templateValues, TEMPLATE_LEAVES,
       'It fills the entry template.')
   );
 };
 
-export interface BoundMatter { matterId: number; label: string }
+export type BoundMatter = Binding;
 
-export interface BindingOutcome {
-  head: string;
-  given: string;
-  /** How the value was read, so the answer says what it did rather than only what it found. */
-  via: 'cnj' | 'search' | 'id';
-  matterId: number;
-  label: string;
-}
+/**
+ * How the value was read, and what it landed on — so the answer says what it did
+ * rather than only what it found. Spreading the binding in is deliberate: the payload
+ * carries `matterId` or `contactId`, which is the difference that matters.
+ */
+export type BindingOutcome = { head: string; given: string; via: 'cnj' | 'search' | 'id' | 'contact' } & Binding;
 
 /**
  * Turns what a person can read off their screen into a matter this can link to.
@@ -150,7 +149,7 @@ export interface BindingOutcome {
  * to one matter, and the failure mode is hours billed to the wrong client, which
  * nothing downstream ever surfaces.
  */
-async function resolveBindings(
+export async function resolveBindings(
   client: Awaited<ReturnType<typeof context>>['client'],
   given: Record<string, string>,
 ): Promise<{ bound: Record<string, BoundMatter>; outcomes: BindingOutcome[]; failures: string[] }> {
@@ -161,6 +160,35 @@ async function resolveBindings(
   for (const [head, raw] of Object.entries(given)) {
     const value = raw.trim();
     const labelOf = (p: Processo): string => p.pasta ?? p.cnj ?? String(p.id);
+
+    /*
+     * A contact, named explicitly, because it cannot be inferred from the value.
+     *
+     * Some work belongs to a person rather than to any of their cases. A real week
+     * had "every Marcelo Duarte line goes on Helena Nogueira's contact — do not
+     * open a folder, and do not force his inquérito into one of Nogueira's six", and
+     * there was nowhere to put it: `matters` resolved only to matters, so the only
+     * way to record it was to pick a matter it does not belong to.
+     *
+     * The prefix is required rather than guessed. A bare name that matches one
+     * contact and no matter would be a plausible contact binding and an equally
+     * plausible typo for a folder, and this table sends every future line beginning
+     * with that head somewhere.
+     */
+    const asContact = value.match(/^conta(?:c|ç)?t?[o]?\s*:\s*(.+)$/i)?.[1]?.trim();
+    if (asContact) {
+      const found = await client.searchContatos(asContact);
+      if (found.length === 1) {
+        bound[head] = { contactId: found[0]!.id, label: found[0]!.nome ?? asContact };
+        outcomes.push({ head, given: value, via: 'contact', ...bound[head]! });
+      } else {
+        failures.push(
+          `"${head}": contact "${asContact}" matches ${found.length} contacts, so it names no single one` +
+          (found.length > 1 ? ` (${found.slice(0, 3).map((c) => c.nome).join(', ')}…)` : ''),
+        );
+      }
+      continue;
+    }
 
     const cnj = value.match(CNJ_PATTERN)?.[0] ?? null;
     if (cnj) {
@@ -316,8 +344,10 @@ export const configTools: Tool[] = [
       'Call it with no arguments first to see the evidence, then again carrying the aliases and choices a person ' +
       'approved, which returns the confirmationToken apply_config needs. Alias candidates are approved one at a ' +
       'time, never in a block: each one rewrites every future line whose description begins with that name. ' +
-      '`matters` is the separate, stronger decision: it binds a head straight to one matter — give a CNJ, a ' +
+      '`matters` is the separate, stronger decision: it binds a head straight to one target — give a CNJ, a ' +
       'folder number or a record id — for the lines whose client cannot be found by searching their name. ' +
+      'When the work belongs to a person rather than to any of their cases, give "contato: <name>" instead and ' +
+      'it binds to that contact; the prefix is required, because a bare name cannot be told from a folder. ' +
       '`overrides` settles only the six firm-wide defaults, and any other key in it is refused rather than ' +
       'ignored.',
     schema: proposalArgs,
@@ -331,11 +361,12 @@ export const configTools: Tool[] = [
       if (bindings.failures.length > 0) {
         return {
           ok: false,
-          error: `${bindings.failures.length} of the matters given name no single matter`,
+          error: `${bindings.failures.length} of the bindings given name no single target`,
           failures: bindings.failures,
           hint:
-            'Nothing was changed. A binding sends every future line beginning with that name to one matter, so ' +
-            'it has to name exactly one. Use search_matters to find it, then give its CNJ or its record id.',
+            'Nothing was changed. A binding sends every future line beginning with that name to one target, so ' +
+            'it has to name exactly one. Use search_matters or lookup to find it, then give its CNJ, its record ' +
+            'id, or "contato: <name>" for a contact.',
         };
       }
       const built = build(discovery, args, bindings.bound);
@@ -420,7 +451,7 @@ export const configTools: Tool[] = [
       if (bindings.failures.length > 0) {
         return {
           ok: false,
-          error: `${bindings.failures.length} of the matters given no longer name a single matter`,
+          error: `${bindings.failures.length} of the bindings given no longer name a single target`,
           failures: bindings.failures,
           hint: 'Nothing was written. The tenant moved since the proposal, or the value was never unambiguous.',
         };

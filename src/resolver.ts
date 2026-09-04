@@ -6,7 +6,7 @@ import {
   type LegalOneTimesheet,
   type Processo,
 } from './client.ts';
-import { classifyState, firmConfig } from './config.ts';
+import { bindingTarget, classifyState, firmConfig, type Binding } from './config.ts';
 
 /**
  * Decides what a timesheet line should be booked against.
@@ -51,8 +51,7 @@ export type Resolution =
  */
 const aliases = (): Record<string, string> => firmConfig().aliases;
 const internalPrefixes = (): string[] => firmConfig().internal.prefixes;
-const boundMatters = (): Record<string, { matterId: number; label: string }> =>
-  firmConfig().matters ?? {};
+const boundMatters = (): Record<string, Binding> => firmConfig().matters ?? {};
 
 /**
  * A standing decision for a name close to this head, when there is one.
@@ -77,8 +76,9 @@ export const nearBinding = (head: string | null): string | null => {
   for (const [key, binding] of Object.entries(boundMatters())) {
     if (key === head) continue;
     if (extendsName(head, key) || extendsName(key, head)) {
+      const target = bindingTarget(binding);
       return (
-        `there is a standing binding for "${key}" — matter ${binding.matterId} (${binding.label}) — and this ` +
+        `there is a standing binding for "${key}" — ${target.kind} ${target.id} (${target.text}) — and this ` +
         `head is a longer form of it. It was NOT applied, because only the person can say the two names are ` +
         `the same client; if they are, add "${head}" to matters and every future line follows.`
       );
@@ -157,11 +157,7 @@ export async function resolveTarget(
    * client whose matter had been named explicitly.
    */
   const bound = rawName ? boundMatters()[rawName] : undefined;
-  const boundResolution = (): Resolution => ({
-    kind: 'bound',
-    link: { kind: 'processo', id: bound!.matterId, text: bound!.label },
-    head: rawName!,
-  });
+  const boundResolution = (): Resolution => ({ kind: 'bound', link: bindingTarget(bound!), head: rawName! });
 
   /*
    * CNJ first, name second — the inverse of how a person searches.

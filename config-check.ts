@@ -385,5 +385,84 @@ const at = async (dir: string) => {
   check('the exact head still binds without any of this firing', decided.kind === 'bound');
 }
 
+{
+  /*
+   * A head bound to a contact rather than to a matter.
+   *
+   * "Every Marcelo Duarte line goes on Helena Nogueira's contact — do not open a
+   * folder, and do not force his inquérito into one of Nogueira's six" is an answer the
+   * configuration had no way to hold. `matters` resolved only to matters, so recording
+   * it meant picking one of those six: filing the work under a case it has nothing to
+   * do with, which is the failure this table exists to prevent, arrived at by obeying
+   * the table.
+   */
+  const { reloadConfig: reload, bindingTarget } = await import('./src/config.ts');
+  const { resolveTarget } = await import('./src/resolver.ts');
+  const { resolveBindings } = await import('./src/mcp/tools-config.ts');
+
+  const dir = scratch();
+  writeFileSync(join(dir, 'aliases.json'), JSON.stringify({
+    ...full(),
+    matters: {
+      'Marcelo Duarte': { contactId: 428, label: 'Helena Nogueira' },
+      'AGROLINHA / Vilson Prado Meireles': { matterId: 1141, label: 'Proc - 0000912' },
+    },
+  }));
+  writeFileSync(join(dir, 'template.json'), JSON.stringify([['SituacaoId', '0']]));
+  process.env['LEGALONE_CONFIG_DIR'] = dir;
+  reload();
+
+  check('a contact binding survives the schema and reads back as a contact link',
+    bindingTarget({ contactId: 428, label: 'Helena Nogueira' }).kind === 'contato');
+  check('...and a matter binding still reads back as a matter link',
+    bindingTarget({ matterId: 1141, label: 'Proc - 0000912' }).kind === 'processo');
+
+  const nothing = { searchProcessos: async () => [], searchContatos: async () => [] } as never;
+  const caseri = await resolveTarget(nothing, 'Marcelo Duarte — IP de perseguição (TJSP): triagem');
+  check('a head bound to a contact links to that contact, not to a matter',
+    caseri.kind === 'bound' && (caseri as any).link.kind === 'contato' && (caseri as any).link.id === 428,
+    `${caseri.kind} ${(caseri as any).link?.kind} ${(caseri as any).link?.id}`);
+
+  /*
+   * The precedence a contact binding must not change: a line carrying its own case
+   * number is more specific than a rule about its head, whatever kind the rule names.
+   */
+  const withCnj = {
+    searchProcessos: async () => [{ id: 903, cnj: '1002345-67.2016.8.26.0100', pasta: 'Proc - 0000631' }],
+    searchContatos: async () => [],
+  } as never;
+  const specific = await resolveTarget(withCnj, 'Marcelo Duarte — algo 1002345-67.2016.8.26.0100: revisão');
+  check('a CNJ on the line still beats a contact binding',
+    specific.kind === 'linked' && (specific as any).link.id === 903, specific.kind);
+
+  /*
+   * The prefix is required, and one hit or nothing. A binding that quietly picked the
+   * first of several contacts would send a client's whole year somewhere nobody chose.
+   */
+  const contacts = (list: Array<{ id: number; nome: string }>) =>
+    ({ searchProcessos: async () => [], searchContatos: async () => list, readMatter: async () => null } as never);
+
+  const one = await resolveBindings(contacts([{ id: 428, nome: 'Helena Nogueira' }]),
+    { 'Marcelo Duarte': 'contato: Helena Nogueira' });
+  check('"contato: <name>" binds to the one contact it names',
+    (one.bound['Marcelo Duarte'] as any)?.contactId === 428 && one.failures.length === 0,
+    JSON.stringify(one.failures));
+  check('...and the outcome says it was read as a contact',
+    one.outcomes[0]?.via === 'contact');
+
+  const many = await resolveBindings(contacts([{ id: 1, nome: 'A' }, { id: 2, nome: 'B' }]),
+    { 'X': 'contato: ambíguo' });
+  check('two contacts is a refusal, not a first hit',
+    many.failures.length === 1 && Object.keys(many.bound).length === 0);
+
+  const none = await resolveBindings(contacts([]), { 'X': 'contact: ninguém' });
+  check('no contact is a refusal too', none.failures.length === 1);
+
+  const bare = await resolveBindings(contacts([{ id: 428, nome: 'Helena Nogueira' }]),
+    { 'X': 'Helena Nogueira' });
+  check('a bare name is NOT read as a contact — the prefix is the whole signal',
+    bare.failures.length === 1 && Object.keys(bare.bound).length === 0, JSON.stringify(bare.outcomes));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

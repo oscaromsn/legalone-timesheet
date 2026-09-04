@@ -61,9 +61,10 @@ export const instructionsFor = (configured: boolean): string =>
     'THE THREE FIELDS THAT CARRY A DECISION, and they are not interchangeable. `overrides` settles the six ' +
     'firm-wide defaults the records could not agree on, by their config key (responsavelId, naturezaId, …) — ' +
     'any other key is refused. `aliases` maps the name at the head of a line to the name Legal One files it ' +
-    'under, so a search can find it. `matters` binds a head straight to ONE matter, by CNJ, folder number or ' +
-    'record id, for the clients a name search cannot reach; it is the strongest of the three, it applies to ' +
-    'every future line beginning with that name, and a line carrying its own CNJ still wins over it. When a ' +
+    'under, so a search can find it. `matters` binds a head straight to ONE target, by CNJ, folder number or ' +
+    'record id — or by "contato: <name>" when the work belongs to a person rather than to any of their cases, ' +
+    'which is a real answer and not a matter binding in disguise. It is the strongest of the three, it applies ' +
+    'to every future line beginning with that name, and a line carrying its own CNJ still wins over it. When a ' +
     'person says "everything for X goes to matter Y", that is `matters`, never `overrides`.\n\n' +
     'BOOKING HOURS. Always plan_entries first and show the result. linked and internal are decided; ' +
     'ambiguous, matter-missing and escalate are ANSWERS, not errors — they are the cases where a guess bills ' +

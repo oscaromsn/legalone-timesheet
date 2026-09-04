@@ -44,14 +44,31 @@ const DefaultsSchema = z.looseObject({
 });
 
 /**
- * A head bound straight to a matter, with the label it was bound under.
+ * A head bound straight to one target, with the label it was bound under.
  *
  * The label is stored so the file can be read. `"Rafael Bittencourt": 1611` is a
  * decision nobody can audit six months later; `1611 — 3ª Fase Operação Alvorada`
  * is one a person can recognise as right or wrong at a glance, which matters
  * because this is the table that sends hours somewhere.
+ *
+ * A target is a matter or a contact, because both are real answers a person gives.
+ * "Marcelo Duarte goes on Helena Nogueira's contact — do not open a folder and do
+ * not force his inquérito into one of Nogueira's six" is not a matter binding wearing a
+ * different hat: booking it against any of those matters would file the work under a
+ * case it has nothing to do with. Legal One links an entry to a matter or to a
+ * contact, so the configuration can say either.
  */
-const BindingSchema = z.object({ matterId: z.number().int().positive(), label: z.string() });
+const BindingSchema = z.union([
+  z.object({ matterId: z.number().int().positive(), label: z.string() }),
+  z.object({ contactId: z.number().int().positive(), label: z.string() }),
+]);
+
+/** A binding's target as a link, whichever kind it names. */
+export type Binding = z.infer<typeof BindingSchema>;
+export const bindingTarget = (b: Binding): { kind: 'processo' | 'contato'; id: number; text: string } =>
+  'contactId' in b
+    ? { kind: 'contato', id: b.contactId, text: b.label }
+    : { kind: 'processo', id: b.matterId, text: b.label };
 
 const FirmSchema = z.looseObject({
   aliases: z.record(z.string(), z.string()),

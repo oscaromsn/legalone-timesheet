@@ -224,11 +224,24 @@ const check = (name: string, condition: boolean, detail = '') => {
   const confined = portTimeout('/somewhere/browser', 30_000, false);
   const collision = portTimeout('/somewhere/browser', 30_000, true);
   check('port timeout: an empty profile is reported as confinement, not slowness',
-    /sandbox|policy/i.test(confined) && !/another instance/i.test(confined), confined);
-  check('port timeout: a written profile is reported as a collision',
-    /another instance/i.test(collision) && !/sandbox/i.test(collision), collision);
+    /sandbox|policy/i.test(confined), confined);
   check('port timeout: both name the directory to act on',
     confined.includes('/somewhere/browser') && collision.includes('/somewhere/browser'));
+
+  /*
+   * "Another instance is holding the profile" was the old advice, and following it
+   * meant closing the sign-in window — the one thing that made the next attempt
+   * work. A browser already on this profile is reused now, so no message may send a
+   * person after one.
+   */
+  check('port timeout: never blames another instance, which is now reused rather than fought',
+    !/another instance/i.test(confined) && !/another instance/i.test(collision));
+
+  const spoke = portTimeout('/somewhere/browser', 30_000, true, 21, 'Failed to create a ProcessSingleton');
+  check('port timeout: carries the exit code, which is the whole diagnosis',
+    spoke.includes('21'), spoke);
+  check('port timeout: quotes what the browser itself said',
+    spoke.includes('Failed to create a ProcessSingleton'), spoke);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

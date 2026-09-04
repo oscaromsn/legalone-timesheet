@@ -121,7 +121,28 @@ export const findBrowser = (explicit?: string): string => {
   return found;
 };
 
-interface Browser { cdp: Cdp; stop: () => void }
+interface Browser {
+  cdp: Cdp;
+  /** Ends the browser — a no-op for one we found already running and did not start. */
+  stop: () => void;
+  reused: boolean;
+}
+
+/** Connects to a browser already listening on this profile, or reports none. */
+const endpointOn = async (portFile: string, timeoutMs: number): Promise<Cdp | null> => {
+  if (!existsSync(portFile)) return null;
+  const port = Number(readFileSync(portFile, 'utf8').split('\n')[0]);
+  if (!Number.isFinite(port) || port <= 0) return null;
+  try { return await Cdp.attach(port, timeoutMs); } catch { return null; }
+};
+
+/** Headless browsers say so in their user agent, which is how a stale one is spotted. */
+const runningHeadless = async (cdp: Cdp): Promise<boolean> => {
+  try {
+    const { userAgent } = await cdp.send<{ userAgent: string }>('Browser.getVersion');
+    return /headless/i.test(userAgent ?? '');
+  } catch { return false; }
+};
 
 /**
  * Starts the browser on the connector's own profile and connects to it.
@@ -143,13 +164,43 @@ async function launch(
   onProgress: (message: string) => void = () => {},
 ): Promise<Browser> {
   const firstRun = !existsSync(join(profileDir, 'Local State'));
+  mkdirSync(profileDir, { recursive: true });
+  const portFile = join(profileDir, 'DevToolsActivePort');
+
+  /*
+   * Reuse a browser already open on this profile, rather than starting a second one.
+   *
+   * This path is not an optimisation, it is the login round-trip. A sign-in leaves a
+   * visible window running on purpose — it is the prompt — and Chrome will not start
+   * a second browser on a profile that already has one: the new process notifies the
+   * existing browser and exits with code 21, having written no port. The old code
+   * then deleted the port file first, so the evidence that a browser was there went
+   * with it, and the failure was reported as "is another instance using this
+   * profile?" — which was true, and the other instance was ours.
+   *
+   * Measured against Claude Desktop: every call after the one that opened the window
+   * failed this way, so signing in could never complete.
+   */
+  const running = await endpointOn(portFile, 2_000);
+  if (running) {
+    if (headless || !(await runningHeadless(running))) {
+      onProgress('a browser is already open on this profile — using it');
+      return { cdp: running, stop: () => {}, reused: true };
+    }
+    // A window is wanted and what is open is headless: it is a leftover of ours, and
+    // a person cannot sign in to something they cannot see.
+    onProgress('a headless browser was left open — replacing it with a window');
+    await running.send('Browser.close').catch(() => undefined);
+    running.close();
+  }
+
+  rmSync(portFile, { force: true });
+  // Announced here rather than on entry: reusing a browser is not starting one, and
+  // saying both in the same breath is how a report stops being worth reading.
   onProgress(
     `starting ${basename(browserPath)}${headless ? '' : ' in a visible window'}` +
       `${firstRun ? ' — first run on a new profile, which takes longer' : ''}`,
   );
-  mkdirSync(profileDir, { recursive: true });
-  const portFile = join(profileDir, 'DevToolsActivePort');
-  rmSync(portFile, { force: true });
 
   const args = [
     `--user-data-dir=${profileDir}`,
@@ -161,26 +212,28 @@ async function launch(
   ];
   if (headless) args.push('--headless=new');
 
-  const child: ChildProcess = spawn(browserPath, args, { stdio: 'ignore', detached: false });
+  // stderr is kept, not discarded: when a browser refuses to open a port it says why,
+  // and throwing that away left the only diagnosis available to guesswork.
+  const child: ChildProcess = spawn(browserPath, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
+  let complaint = '';
+  child.stderr?.on('data', (chunk: Buffer) => { complaint = `${complaint}${chunk}`.slice(-600); });
   const stop = () => { try { child.kill(); } catch { /* already gone */ } };
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(portFile)) {
-      const port = Number(readFileSync(portFile, 'utf8').split('\n')[0]);
-      if (Number.isFinite(port) && port > 0) {
-        try { return { cdp: await Cdp.attach(port, 5_000), stop }; } catch { /* retry */ }
-      }
-    }
-    if (child.exitCode !== null) {
-      stop();
-      throw new Error(`browser exited (${child.exitCode}) before opening a debugging port — is another instance using ${profileDir}?`);
-    }
+    const cdp = await endpointOn(portFile, 5_000);
+    if (cdp) return { cdp, stop, reused: false };
+    /*
+     * A process that has exited is not a reason to stop waiting. On macOS the
+     * launched process routinely hands off to another and exits, and the browser it
+     * left behind is the one that writes the port. Only the deadline ends this.
+     */
     await new Promise((r) => setTimeout(r, 150));
   }
   const wrote = (() => { try { return readdirSync(profileDir).length > 0; } catch { return false; } })();
+  const exited = child.exitCode;
   stop();
-  throw new Error(portTimeout(profileDir, timeoutMs, wrote));
+  throw new Error(portTimeout(profileDir, timeoutMs, wrote, exited, complaint.trim()));
 }
 
 /**
@@ -192,14 +245,46 @@ async function launch(
  * process and an empty profile. A browser that wrote a profile and then produced no
  * port is the ordinary collision instead. Naming the wrong one costs an hour.
  */
-export const portTimeout = (profileDir: string, timeoutMs: number, wrote: boolean): string =>
-  wrote
-    ? `browser did not open a debugging port within ${timeoutMs}ms, though it did write to ${profileDir}. ` +
-      `Another instance is probably holding that profile — close it, or pass a different profileDir.`
+export const portTimeout = (
+  profileDir: string,
+  timeoutMs: number,
+  wrote: boolean,
+  exitCode: number | null = null,
+  complaint = '',
+): string => {
+  const said = complaint ? ` The browser said: ${complaint}` : '';
+  const ended = exitCode === null ? '' : ` The process this started exited with ${exitCode}.`;
+  return wrote
+    ? `browser did not open a debugging port within ${timeoutMs}ms, though it did write to ${profileDir}.` +
+      `${ended} A browser already running on this profile is normally reused rather than restarted, so this is ` +
+      `one that neither answered nor started.${said}`
     : `browser started but wrote nothing into ${profileDir} within ${timeoutMs}ms, so it never opened a ` +
-      `debugging port. A browser that cannot write the profile directory it was given is normally one confined ` +
-      `by a sandbox or by a policy on that path; check that this process may write there, or pass a profileDir ` +
-      `it may write to.`;
+      `debugging port.${ended} A browser that cannot write the profile directory it was given is normally one ` +
+      `confined by a sandbox or by a policy on that path; check that this process may write there, or set ` +
+      `LEGALONE_PROFILE_DIR to somewhere it may write.${said}`;
+};
+
+/**
+ * A tab already showing the sign-in, if there is one.
+ *
+ * Without this, every call that needs a person opens another tab in the same
+ * window, and a person who calls twice is looking at a browser filling with
+ * identical sign-on pages, unsure which one is live.
+ */
+const signOnTab = async (cdp: Cdp, target: string): Promise<string | null> => {
+  const { targetInfos } = await cdp
+    .send<{ targetInfos: Array<{ targetId: string; type: string; url: string }> }>('Target.getTargets')
+    .catch(() => ({ targetInfos: [] as Array<{ targetId: string; type: string; url: string }> }));
+  const wanted = (() => { try { return new URL(target).host; } catch { return ''; } })();
+  const hit = targetInfos.find((t) => {
+    if (t.type !== 'page') return false;
+    try {
+      const { host } = new URL(t.url);
+      return host === wanted || IDP_HOST.test(host);
+    } catch { return false; }
+  });
+  return hit?.targetId ?? null;
+};
 
 const sessionCookie = async (cdp: Cdp): Promise<string | null> => {
   const { cookies } = await cdp.send<{ cookies: Array<{ name: string; value: string }> }>('Storage.getCookies');
@@ -332,10 +417,15 @@ export async function ensureSession(options: SessionOptions = {}): Promise<Sessi
   // Headless could not get there on its own: hand the browser to the person.
   if (!neverRun) say('the sign-on has lapsed, so this needs you');
   const visible = await launch(browserPath, profileDir, false, timeoutMs, say);
-  say('window open — loading the sign-on page');
-  const { targetId, sessionId } = await visible.cdp.openTab('about:blank');
-  await visible.cdp.send('Page.navigate', { url: target }, sessionId).catch(() => undefined);
-  void targetId;
+  const open = await signOnTab(visible.cdp, target);
+  if (open) {
+    say('the sign-on page is already open — bringing that tab to the front');
+    await visible.cdp.send('Target.activateTarget', { targetId: open }).catch(() => undefined);
+  } else {
+    say('window open — loading the sign-on page');
+    const { sessionId } = await visible.cdp.openTab('about:blank');
+    await visible.cdp.send('Page.navigate', { url: target }, sessionId).catch(() => undefined);
+  }
   // Left running on purpose — the window is the login prompt. It is closed by the
   // next successful `ensureSession`, or by the person.
   visible.cdp.close();
